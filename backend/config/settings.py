@@ -19,7 +19,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware", 
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
-    "core.middleware.BloquearAdminParaJogadoresMiddleware",
+    #"core.middleware.BloquearAdminParaJogadoresMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
