@@ -39,7 +39,12 @@ function AdminLogin({ onDone }: { onDone: () => void }) {
   const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const go = async () => {
     setBusy(true);
-    try { const r = await api("/auth/login/", { method: "POST", body: { username: email, password: pw } }); setToken(r.token); onDone(); }
+    try { 
+      const r = await api("/auth/login/", { method: "POST", body: { username: email, password: pw } }); 
+      setToken(r.token); 
+      localStorage.setItem("is_admin", "true");
+      onDone(); 
+    }
     catch { setErr("E-mail ou senha incorretos."); } finally { setBusy(false); }
   };
   return (
@@ -74,9 +79,9 @@ function Entry({ sid, onDone }: { sid?: number; onDone: () => void }) {
       <div className="blob absolute -bottom-24 -right-24 w-96 h-96 bg-teal/15 rounded-full blur-3xl" style={{ animationDelay: "3s" }} />
       <div className="w-full max-w-sm relative">
         <div className="flex flex-col items-center mb-6 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-royal to-gold flex items-center justify-center shadow-soft mb-4 border border-teal/30">
-            <Trophy size={30} className="text-white" />
-          </div>
+            <div className="w-16 h-16 rounded-2xl shadow-soft mb-4 overflow-hidden flex items-center justify-center">
+              <img src="/logoEsports.png" alt="5th E-Sports" className="w-full h-full object-contain" />
+            </div>
           <p className="text-sm font-display font-bold text-teal tracking-[0.3em] uppercase">5th E-Sports</p>
           <h1 className="text-3xl">UniEVANGÉLICA</h1>
           <p className="text-muted text-sm mt-1">Faça seu check-in e entre no campeonato.</p>
@@ -93,6 +98,7 @@ function Entry({ sid, onDone }: { sid?: number; onDone: () => void }) {
 
 export default function App() {
   const [authed, setAuthed] = useState(!!getToken());
+  const isAdmin = localStorage.getItem("is_admin") === "true";
   const [tab, setTab] = useState(TABS[0].key);
   const [seasons, setSeasons] = useState<any[]>();
   const [sid, setSid] = useState<number>();
@@ -105,8 +111,9 @@ export default function App() {
   return (
     <div className="max-w-6xl mx-auto p-4">
       <header className="flex flex-wrap items-center gap-3 border-b border-line pb-4 mb-6">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-royal to-teal flex items-center justify-center shrink-0">
-          <Trophy size={18} className="text-white" />
+        <div className="w-9 h-9 rounded-xl shrink-0 overflow-hidden flex items-center justify-center">
+          {/* Coloque a sua logo na pasta public do projeto e mude o caminho do src abaixo */}
+          <img src="/logoEsports.png" alt="5th E-Sports" className="w-full h-full object-cover" />
         </div>
         <h1 className="text-xl font-bold mr-2">5th E-Sports</h1>
         {seasons.length > 0 && (
@@ -118,17 +125,20 @@ export default function App() {
           <Plus size={18} />
         </button>
         <nav className="flex flex-wrap gap-1 flex-1">
-          {TABS.map(({ key, icon: Icon }) => (
-            <button key={key} onClick={() => setTab(key)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                tab === key ? "bg-royal text-white" : "text-muted hover:text-ice hover:bg-panel2"}`}>
-              <Icon size={16} />{key}
-            </button>
-          ))}
+          {TABS.map(({ key, icon: Icon }) => {
+            if (key === "Admin" && !isAdmin) return null;
+            return (
+              <button key={key} onClick={() => setTab(key)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  tab === key ? "bg-royal text-white" : "text-muted hover:text-ice hover:bg-panel2"}`}>
+                <Icon size={16} />{key}
+              </button>
+            );
+          })}
         </nav>
         <Bell />
         <button className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ice px-2 py-1.5 rounded-lg hover:bg-panel2 transition-colors"
-          onClick={() => { setToken(null); setAuthed(false); }}><LogOut size={16} />Sair</button>
+          onClick={() => { setToken(null); localStorage.removeItem("is_admin"); setAuthed(false); }}><LogOut size={16} />Sair</button>
       </header>
       {creating && (
         <div className="mb-6">
@@ -148,7 +158,7 @@ export default function App() {
         {tab === "Estatísticas" && <Stats sid={sid} />}
         {tab === "Meu campeonato" && <Dashboard sid={sid} />}
         {tab === "Meu perfil" && <Profile sid={sid} />}
-        {tab === "Admin" && <Admin sid={sid} />}
+        {tab === "Admin" && isAdmin && <Admin sid={sid} />}
       </>}
     </div>
   );
