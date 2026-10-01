@@ -3,6 +3,9 @@ import { Bell as BellIcon, BarChart3, CalendarDays, KeyRound, LayoutList, Lock, 
 import { api, getToken, setToken, useData } from "./api";
 import { Admin, Bracket, CheckIn, CreateSeasonForm, Dashboard, Profile, Rounds, Standings, Stats } from "./pages";
 
+// Importação da logo (agora lida a partir da pasta src/assets)
+import logoEsports from "./assets/logoEsports.png";
+
 const TABS = [
   { key: "Classificação", icon: LayoutList },
   { key: "Rodadas", icon: CalendarDays },
@@ -52,16 +55,20 @@ function AdminLogin({ onDone }: { onDone: () => void }) {
       <label className="block">
         <span className="sr-only">E-mail</span>
         <div className="relative">
-          <Mail size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input className="inp pl-10" placeholder="E-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Mail size={17} className="text-muted" />
+          </div>
+          <input className="inp w-full" style={{ paddingLeft: "2.5rem" }} placeholder="E-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && go()} />
         </div>
       </label>
       <label className="block">
         <span className="sr-only">Senha</span>
         <div className="relative">
-          <Lock size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input className="inp pl-10" type="password" placeholder="Senha" value={pw} onChange={(e) => setPw(e.target.value)}
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Lock size={17} className="text-muted" />
+          </div>
+          <input className="inp w-full" style={{ paddingLeft: "2.5rem" }} type="password" placeholder="Senha" value={pw} onChange={(e) => setPw(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && go()} />
         </div>
       </label>
@@ -80,7 +87,8 @@ function Entry({ sid, onDone }: { sid?: number; onDone: () => void }) {
       <div className="w-full max-w-sm relative">
         <div className="flex flex-col items-center mb-6 text-center">
             <div className="w-16 h-16 rounded-2xl shadow-soft mb-4 overflow-hidden flex items-center justify-center">
-              <img src="/logoEsports.png" alt="5th E-Sports" className="w-full h-full object-contain" />
+              {/* Logo atualizada com a variável */}
+              <img src={logoEsports} alt="5th E-Sports" className="w-full h-full object-contain" />
             </div>
           <p className="text-sm font-display font-bold text-teal tracking-[0.3em] uppercase">5th E-Sports</p>
           <h1 className="text-3xl">UniEVANGÉLICA</h1>
@@ -112,8 +120,8 @@ export default function App() {
     <div className="max-w-6xl mx-auto p-4">
       <header className="flex flex-wrap items-center gap-3 border-b border-line pb-4 mb-6">
         <div className="w-9 h-9 rounded-xl shrink-0 overflow-hidden flex items-center justify-center">
-          {/* Coloque a sua logo na pasta public do projeto e mude o caminho do src abaixo */}
-          <img src="/logoEsports.png" alt="5th E-Sports" className="w-full h-full object-cover" />
+          {/* Logo atualizada com a variável */}
+          <img src={logoEsports} alt="5th E-Sports" className="w-full h-full object-cover" />
         </div>
         <h1 className="text-xl font-bold mr-2">5th E-Sports</h1>
         {seasons.length > 0 && (
