@@ -4,7 +4,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-change-me")
 DEBUG = os.getenv("DEBUG", "1") == "1"
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS= ["ESportsEAFC.pythonanywhere.com"]
 
 INSTALLED_APPS = [
     "django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
@@ -24,10 +24,21 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "config.urls"
 
+import os  # Certifique-se de que isso está no topo do seu settings.py
+
 TEMPLATES = [
-    {"BACKEND": "django.template.backends.django.DjangoTemplates", "APP_DIRS": True,
-     "OPTIONS": {"context_processors": ["django.template.context_processors.request",
-     "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages"]}}
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates", 
+        "DIRS": [os.path.join(BASE_DIR, '../frontend/dist')], # <-- Ajuste feito aqui
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth", 
+                "django.contrib.messages.context_processors.messages"
+            ]
+        }
+    }
 ]
 
 # Configuração alterada para SQLite3
