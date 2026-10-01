@@ -1,0 +1,24 @@
+@tailwind base; @tailwind components; @tailwind utilities;
+
+body { @apply bg-navy text-ice font-sans antialiased; background-image: radial-gradient(ellipse 1200px 700px at 50% -10%, #2a1f14 0%, #0A0C12 55%); min-height: 100vh; }
+h1, h2, h3 { @apply font-display tracking-tight font-bold; }
+
+.card { @apply bg-panel border border-line rounded-2xl p-4 shadow-soft; }
+.btn { @apply inline-flex items-center gap-1.5 bg-royal hover:brightness-110 text-white font-medium rounded-lg px-4 py-2 transition-all focus-visible:outline outline-2 outline-offset-2 outline-royal/60 disabled:opacity-40 disabled:pointer-events-none; }
+.btn-soft { @apply inline-flex items-center gap-1.5 bg-panel2 hover:bg-[#212a3c] border border-line text-ice font-medium rounded-lg px-4 py-2 transition-colors; }
+.btn-gold { @apply inline-flex items-center gap-1.5 bg-gold/90 hover:bg-gold text-navy font-semibold rounded-lg px-4 py-2 transition-colors; }
+.inp { @apply bg-navy border border-line rounded-lg px-3 py-2 w-full text-ice placeholder:text-muted transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-royal/50; }
+
+.chip { @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium; }
+.chip-muted { @apply chip bg-panel2 text-muted; }
+.chip-teal { @apply chip bg-teal/15 text-teal; }
+.chip-gold { @apply chip bg-gold/15 text-gold; }
+.chip-rose { @apply chip bg-rose-400/15 text-rose-300; }
+
+@keyframes shine { from { background-position: -200% 0 } to { background-position: 200% 0 } }
+.champion { background: linear-gradient(110deg, #1C1F2B 20%, #3a2a18 40%, #1C1F2B 60%); background-size: 220% 100%; animation: shine 4s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .champion { animation: none } }
+
+@keyframes blob { 0%, 100% { transform: translate(0,0) scale(1) } 33% { transform: translate(20px,-15px) scale(1.05) } 66% { transform: translate(-15px,10px) scale(0.97) } }
+.blob { animation: blob 14s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .blob { animation: none } }
