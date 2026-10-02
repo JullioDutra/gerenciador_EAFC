@@ -10,15 +10,17 @@ DEFAULTS = {"swiss_rounds": 8, "win": 3, "draw": 1, "loss": 0, "direct": 16, "pl
     "playoff_qualify": 16, "tiebreakers": ["pts", "gd", "gf", "wins"],  # + ga, buchholz
     "wo_score": [3, 0], "round_days": 7, "ko_format": "single",
     "extra_time": True, "penalties": True,  # usados apenas para exibição/orientação da prorrogação
-    "format": "league",  # "league" (fase de liga/Swiss, padrão) ou "groups" (fase de grupos todos-contra-todos)
+    "format": "league",  # "league" (fase de liga/Swiss, padrão), "groups" (fase de grupos) ou "knockout" (só mata-mata)
     "groups": 4, "group_qualify": 2,  # só para format="groups": nº de grupos e quantos de cada grupo avançam
     "score_deadline_hours": None}  # prazo p/ lançar o placar depois do horário da partida (None = round_days)
 LEAGUE_PHASES = ("swiss", "groups")  # fases que valem pontos na classificação
 KO_BY_SIZE = {32: "r32", 16: "r16", 8: "qf", 4: "sf", 2: "final"}
+KO_BY_SIZE_ASC = (2, 4, 8, 16, 32)
 LEGS_TO_WIN = {"bo3": 2, "bo5": 3, "two_legs": 2}
 FORMAT_LABEL = {"single": "Partida única", "bo3": "Melhor de 3", "bo5": "Melhor de 5", "two_legs": "Ida e volta"}
 def cfg(season): return {**DEFAULTS, **season.config}
 def is_groups(season): return cfg(season)["format"] == "groups"
+def is_knockout(season): return cfg(season)["format"] == "knockout"
 
 def notify(player, kind, text):
     if player: Notification.objects.create(user=player.user, kind=kind, text=text)
@@ -288,6 +290,53 @@ def _conceded(ms, pid):
     return sum((m.score_b if m.player_a_id == pid else m.score_a) or 0 for m in ms if pid in (m.player_a_id, m.player_b_id))
 def PlayerRef(p): return {"id": p.id, "nickname": p.nickname, "name": p.name}
 
+IMPORT_PLAYER_FIELDS = ("campus", "team", "platform", "country", "status")  # filtros sobre o jogador
+IMPORT_REG_FIELDS = ("curso", "perfil", "vinculo", "jogo")  # filtros sobre a inscrição (planilha) ligada ao jogador
+IMPORT_COPY = ("name", "nickname", "ea_id", "platform", "country", "avatar", "team", "campus")
+
+def filter_values(season):
+    """Valores distintos de cada campo filtrável no campeonato (para sugerir no filtro)."""
+    out = {f: sorted({v for v in season.players.values_list(f, flat=True) if v}) for f in IMPORT_PLAYER_FIELDS}
+    regs = Registration.objects.filter(player__season=season)
+    out.update({f: sorted({v for v in regs.values_list(f, flat=True) if v}) for f in IMPORT_REG_FIELDS})
+    return out
+
+def select_players(source, filters=None, top=None):
+    """Jogadores de `source` que atendem TODOS os filtros (texto contido, sem maiúsc./minúsc.; status é exato)
+    e, se `top`, que terminaram entre os N primeiros da classificação (posição no grupo, em fase de grupos)."""
+    filters = {k: str(v).strip().lower() for k, v in (filters or {}).items() if str(v).strip()}
+    bad = set(filters) - set(IMPORT_PLAYER_FIELDS) - set(IMPORT_REG_FIELDS)
+    if bad: raise ValueError(f"Filtro desconhecido: {', '.join(sorted(bad))}.")
+    players = list(source.players.select_related("user"))
+    if top:
+        keep = {r["player"].id for r in standings(source) if r["pos"] <= int(top)}
+        players = [p for p in players if p.id in keep]
+    regs = {}
+    if any(k in IMPORT_REG_FIELDS for k in filters):
+        for r in Registration.objects.filter(player__season=source): regs.setdefault(r.player_id, []).append(r)
+    for k, v in filters.items():
+        if k == "status": players = [p for p in players if p.status == v]
+        elif k in IMPORT_PLAYER_FIELDS: players = [p for p in players if v in (getattr(p, k) or "").lower()]
+        else: players = [p for p in players if any(v in (getattr(r, k) or "").lower() for r in regs.get(p.id, []))]
+    return players
+
+@transaction.atomic
+def import_players_from(season, source, filters=None, top=None, dry_run=True):
+    """Traz para `season` os jogadores de outro campeonato que passam no filtro (mesmo usuário, dados copiados).
+    Quem já está no campeonato é ignorado. dry_run mostra só a prévia."""
+    if source.id == season.id: raise ValueError("Escolha outro campeonato como origem.")
+    if not dry_run and season.rounds.exists(): raise ValueError("O campeonato já começou; não dá para trazer jogadores agora.")
+    chosen = select_players(source, filters, top)
+    have = set(season.players.values_list("user_id", flat=True))
+    out = []
+    for p in chosen:
+        new = p.user_id not in have
+        if new and not dry_run:
+            Player.objects.create(season=season, user=p.user, **{f: getattr(p, f) for f in IMPORT_COPY})
+        out.append({"id": p.id, "nickname": p.nickname, "team": p.team, "campus": p.campus, "new": new})
+    n_new = sum(x["new"] for x in out)
+    return {"matched": len(out), "new": n_new, "already": len(out) - n_new, "players": out, "dry_run": dry_run}
+
 PROFILE_FIELDS = ("name", "nickname", "ea_id", "platform", "country", "avatar")
 
 def normalize_phone(raw):
@@ -376,6 +425,7 @@ def checkin_confirm(phone, season=None, registration_ids=None):
         if s is None: raise ValueError(f"Não há campeonato aberto para \"{reg.jogo or 'esta inscrição'}\".")
         if reg.player_id and reg.player.season_id == s.id:
             done.append((reg.player, reg)); continue  # já fez check-in neste campeonato: só reloga
+        if not s.checkin_open: raise ValueError(f"O check-in de \"{s.name}\" está encerrado.")
         first_name = (reg.nome.split() or [reg.nome])[0]
         player, created = Player.objects.get_or_create(season=s, user=user, defaults={
             "name": reg.nome, "nickname": reg.nick or first_name, "team": reg.equipe,
@@ -453,7 +503,7 @@ def advance_series(match):
 def _winners(season, phase):
     return [m.winner for m in season.rounds.filter(phase=phase).last().matches.order_by("slot")]
 
-def _flag(players, status): Player.objects.filter(id__in=[p.id for p in players]).update(status=status)
+def _flag(players, status): Player.objects.filter(id__in=[p.id for p in players if p]).update(status=status)
 
 def _playoff_split(rank, c):
     pool = rank[c["direct"]:c["direct"] + c["playoff_size"]]
@@ -484,12 +534,30 @@ def _first_knockout(season):
     phase = KO_BY_SIZE[len(q)]; names = {"r32": "32-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final"}
     return phase, names[phase], [tuple(pr) for pr in pairs]
 
+def _first_knockout_all(season):
+    """Torneio só de mata-mata: todos os jogadores ativos entram direto no chaveamento (até 32). Cabeças de chave primeiro
+    (campo seed), o resto sorteado; se não fechar potência de 2, os melhores cabeças de chave folgam na 1ª rodada."""
+    players = list(season.players.exclude(status="blocked"))
+    if len(players) < 2: raise ValueError("São necessários pelo menos 2 jogadores para o mata-mata.")
+    if len(players) > 32: raise ValueError(f"O mata-mata comporta até 32 jogadores ({len(players)} cadastrados).")
+    random.shuffle(players); players.sort(key=lambda p: p.seed if p.seed is not None else 10**9)
+    size = next(n for n in KO_BY_SIZE_ASC if n >= len(players))
+    by_seed = {i: p for i, p in enumerate(players, 1)}
+    order = _bracket_order(size)
+    pairs = [(by_seed[order[i]], by_seed.get(order[i + 1])) for i in range(0, size, 2)]  # seed inexistente = folga
+    _flag(players, "main")
+    phase = KO_BY_SIZE[size]; names = {"r32": "32-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final"}
+    return phase, names[phase], pairs
+
 @transaction.atomic
 def advance(season, count=1, sched=None):
     """Avança para a próxima fase/rodada quando tudo está confirmado. Sempre devolve uma lista de rodadas criadas."""
     c = cfg(season); sched = sched or parse_schedule(season, {})
     if _open(season): raise ValueError("Existem partidas sem resultado confirmado.")
     last = season.rounds.last()
+    if last is None and is_knockout(season):
+        phase, name, pairs = _first_knockout_all(season)
+        return [_new_round(season, phase, name, pairs, sched)]
     league = "groups" if is_groups(season) else "swiss"
     total = group_round_count(season) if league == "groups" else c["swiss_rounds"]
     if last is None or (last.phase == league and season.rounds.filter(phase=league).count() < total):
@@ -517,6 +585,7 @@ def advance(season, count=1, sched=None):
     order = Round.PHASES[3:]; names = {"r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final"}
     nxt = order[order.index(last.phase) + 1]; w = _winners(season, last.phase)
     losers = [m.player_b if m.winner_id == m.player_a_id else m.player_a for m in last.matches.all()]
+    losers = [p for p in losers if p]  # quem folgou na 1ª rodada (bye) não tem perdedor
     _flag(losers, "eliminated")
     for p in losers: notify(p, "eliminated", "Você foi eliminado.")
     return [_new_round(season, nxt, names[nxt], [(w[i], w[i + 1]) for i in range(0, len(w), 2)], sched)]

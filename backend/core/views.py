@@ -64,6 +64,17 @@ class SeasonViewSet(viewsets.ModelViewSet):
     @action(detail=True)
     def stats(self, req, pk=None):
         return Response(sv.stats(self.get_object()))
+    @action(detail=True, methods=["get"], url_path="filter-values", permission_classes=[permissions.IsAdminUser])
+    def filter_values(self, req, pk=None):
+        return Response(sv.filter_values(self.get_object()))
+    @action(detail=True, methods=["post"], url_path="import-from", permission_classes=[permissions.IsAdminUser])
+    def import_from(self, req, pk=None):  # {"source": id, "filters": {"campus": "..."}, "top": N, "dry_run": true|false}
+        s, d = self.get_object(), req.data
+        def run():
+            src = Season.objects.filter(pk=d.get("source")).first()
+            if not src: raise ValueError("Escolha o campeonato de origem.")
+            return sv.import_players_from(s, src, d.get("filters"), sv._num(d.get("top"), None, "Top", 1), d.get("dry_run", True) is not False)
+        return err(run)
     @action(detail=True, methods=["post"], url_path="import-csv", permission_classes=[permissions.IsAdminUser])
     def import_csv(self, req, pk=None):  # colunas: email,name,nickname,ea_id,platform,country
         s = self.get_object(); n = 0
@@ -187,7 +198,7 @@ class RegistrationS(serializers.ModelSerializer):
 def _reg_data(reg, season):
     return {"id": reg.id, "jogo": reg.jogo, "equipe": reg.equipe, "campus": reg.campus, "curso": reg.curso,
             "already_checked_in": reg.checked_in, "nick": reg.nick,
-            "season": {"id": season.id, "name": f"{season.name} {season.year}"} if season else None}
+            "season": {"id": season.id, "name": f"{season.name} {season.year}", "checkin_open": season.checkin_open} if season else None}
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
@@ -230,7 +241,7 @@ def me(req, season_id):
     mine = (Match.objects.filter(round__season=s, player_a=p) | Match.objects.filter(round__season=s, player_b=p)).distinct()
     done = mine.filter(status__in=Match.DONE)
     nxt = mine.exclude(status__in=Match.DONE).first(); last = done.last()
-    return Response({"player": PlayerS(p, context={"request": req}).data, "group": row["group"], "position": row["pos"], "zone": row["zone"], "points": row["pts"],
+    return Response({"player": PlayerS(p, context={"request": req}).data, "group": row["group"], "format": sv.cfg(s)["format"], "position": row["pos"], "zone": row["zone"], "points": row["pts"],
         "record": [row["v"], row["e"], row["d"]], "gf": row["gp"], "ga": row["gc"], "gd": row["sg"],
         "next_match": MatchS(nxt).data if nxt else None, "last_match": MatchS(last).data if last else None,
         "history": MatchS(done, many=True).data})

@@ -115,6 +115,9 @@ export default function App() {
     .catch(() => { setSeasons((cur) => cur ?? []); if (authed) { setToken(null); setAuthed(false); } });
   useEffect(() => { loadSeasons(); }, []);
   if (seasons === undefined) return null;
+  const fmt = seasons.find((s) => s.id === sid)?.config?.format ?? "league";
+  const shownTabs = TABS.filter(({ key }) => !(key === "Playoff" && fmt !== "league") && !(key === "Classificação" && fmt === "knockout"));
+  const curTab = shownTabs.some((t) => t.key === tab) ? tab : shownTabs[0].key;
   if (!authed) return <Entry sid={sid} onDone={(s) => { setAuthed(true); if (s) setSid(s); loadSeasons(); }} />;
   return (
     <div className="max-w-6xl mx-auto p-4">
@@ -133,12 +136,12 @@ export default function App() {
           <Plus size={18} />
         </button>
         <nav className="flex flex-wrap gap-1 flex-1">
-          {TABS.map(({ key, icon: Icon }) => {
+          {shownTabs.map(({ key, icon: Icon }) => {
             if (key === "Admin" && !isAdmin) return null;
             return (
               <button key={key} onClick={() => setTab(key)}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  tab === key ? "bg-royal text-white" : "text-muted hover:text-ice hover:bg-panel2"}`}>
+                  curTab === key ? "bg-royal text-white" : "text-muted hover:text-ice hover:bg-panel2"}`}>
                 <Icon size={16} />{key}
               </button>
             );
@@ -159,14 +162,14 @@ export default function App() {
           <CreateSeasonForm onCreated={(id) => { setSid(id); loadSeasons(); }} />
         </div>
       ) : <>
-        {tab === "Classificação" && <Standings sid={sid} />}
-        {tab === "Rodadas" && <Rounds sid={sid} />}
-        {tab === "Playoff" && <Bracket sid={sid} phases={["playoff1", "playoff2"]} />}
-        {tab === "Mata-mata" && <Bracket sid={sid} phases={["r32", "r16", "qf", "sf", "final"]} showChampion />}
-        {tab === "Estatísticas" && <Stats sid={sid} />}
-        {tab === "Meu campeonato" && <Dashboard sid={sid} />}
-        {tab === "Meu perfil" && <Profile sid={sid} />}
-        {tab === "Admin" && isAdmin && <Admin sid={sid} />}
+        {curTab === "Classificação" && <Standings sid={sid} />}
+        {curTab === "Rodadas" && <Rounds sid={sid} />}
+        {curTab === "Playoff" && <Bracket sid={sid} phases={["playoff1", "playoff2"]} />}
+        {curTab === "Mata-mata" && <Bracket sid={sid} phases={["r32", "r16", "qf", "sf", "final"]} showChampion />}
+        {curTab === "Estatísticas" && <Stats sid={sid} />}
+        {curTab === "Meu campeonato" && <Dashboard sid={sid} />}
+        {curTab === "Meu perfil" && <Profile sid={sid} />}
+        {curTab === "Admin" && isAdmin && <Admin sid={sid} />}
       </>}
     </div>
   );
