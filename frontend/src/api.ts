@@ -12,6 +12,13 @@ export async function api(path: string, opts: { method?: string; body?: unknown;
   if (!r.ok) throw new Error(data.detail ?? "Não foi possível concluir a ação.");
   return data;
 }
+/** Baixa um arquivo (ex.: PNG) com o token — <img src> não manda o header Authorization. */
+export async function apiBlob(path: string): Promise<Blob> {
+  const t = getToken();
+  const r = await fetch(`/api${path}`, { headers: t ? { Authorization: `Token ${t}` } : {} });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? "Não foi possível gerar a imagem.");
+  return r.blob();
+}
 export async function apiForm(path: string, form: FormData, method = "POST") {
   return api(path, { method, form });
 }

@@ -49,6 +49,8 @@ DATABASES = {
     }
 }
 
+TIME_ZONE = "America/Sao_Paulo"
+USE_TZ = True
 AUTH_USER_MODEL = "core.User"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 STATIC_URL = "static/"
