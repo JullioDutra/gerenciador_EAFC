@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bell as BellIcon, BarChart3, CalendarDays, KeyRound, LayoutList, Lock, LogOut, Mail, Plus, Shield, Swords, Trophy, UserCircle2 } from "lucide-react";
+import { Bell as BellIcon, BarChart3, Eye, CalendarDays, KeyRound, LayoutList, Lock, LogOut, Mail, Plus, Shield, Swords, Trophy, UserCircle2 } from "lucide-react";
 import { api, getToken, setToken, useData } from "./api";
 import { Admin, Bracket, CheckIn, CreateSeasonForm, Dashboard, Profile, Rounds, Standings, Stats } from "./pages";
 
@@ -111,14 +111,39 @@ export default function App() {
   const [seasons, setSeasons] = useState<any[]>();
   const [sid, setSid] = useState<number>();
   const [creating, setCreating] = useState(false);
+  const [mine, setMine] = useState<any[]>();  // campeonatos em que o jogador participa
+  const [picked, setPicked] = useState(false);  // já escolheu em qual entrar (quando joga em mais de um)
+  const choose = (id: number) => { setSid(id); setPicked(true); try { localStorage.setItem("sid", String(id)); } catch { /* sem storage */ } };
+  const loadMine = () => api("/seasons/mine/").then((m: any[]) => {
+    setMine(m);
+    const saved = Number(localStorage.getItem("sid")); const ok = m.find((x) => x.id === saved);
+    if (ok) { setSid(ok.id); setPicked(true); } else if (m.length === 1) { setSid(m[0].id); setPicked(true); }
+  }).catch(() => setMine([]));
   const loadSeasons = () => api("/seasons/").then((s) => { setSeasons(s); setSid((cur) => cur ?? s.at(-1)?.id); })
     .catch(() => { setSeasons((cur) => cur ?? []); if (authed) { setToken(null); setAuthed(false); } });
   useEffect(() => { loadSeasons(); }, []);
+  useEffect(() => { if (authed && !isAdmin) loadMine(); }, [authed]);
   if (seasons === undefined) return null;
   const fmt = seasons.find((s) => s.id === sid)?.config?.format ?? "league";
-  const shownTabs = TABS.filter(({ key }) => !(key === "Playoff" && fmt !== "league") && !(key === "Classificação" && fmt === "knockout"));
+  const member = isAdmin || !!mine?.some((m) => m.id === sid);  // fora do campeonato só dá para visualizar
+  const shownTabs = TABS.filter(({ key }) => !(key === "Playoff" && fmt !== "league") && !(key === "Classificação" && fmt === "knockout")
+    && !((key === "Meu campeonato" || key === "Meu perfil") && !member));
   const curTab = shownTabs.some((t) => t.key === tab) ? tab : shownTabs[0].key;
   if (!authed) return <Entry sid={sid} onDone={(s) => { setAuthed(true); if (s) setSid(s); loadSeasons(); }} />;
+  if (!isAdmin && mine === undefined) return null;
+  if (!isAdmin && mine && mine.length > 1 && !picked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <div className="card w-full max-w-sm space-y-3">
+          <h2 className="text-2xl font-bold">Em qual campeonato você quer entrar?</h2>
+          <p className="text-sm text-muted">Você participa de mais de um. Dá para trocar depois, pelo seletor no topo.</p>
+          {mine.map((s) => (
+            <button key={s.id} className="btn w-full justify-center" onClick={() => choose(s.id)}>
+              <Trophy size={16} />{s.name} {s.year}{s.jogo ? ` · ${s.jogo}` : ""}</button>))}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="max-w-6xl mx-auto p-4">
       <header className="flex flex-wrap items-center gap-3 border-b border-line pb-4 mb-6">
@@ -128,13 +153,13 @@ export default function App() {
         </div>
         <h1 className="text-xl font-bold mr-2">5th E-Sports</h1>
         {seasons.length > 0 && (
-          <select className="inp !w-auto !py-1.5 text-sm" value={sid} onChange={(e) => setSid(Number(e.target.value))}>
-            {seasons.map((s) => <option key={s.id} value={s.id}>{s.name} {s.year}</option>)}
+          <select className="inp !w-auto !py-1.5 text-sm" value={sid} onChange={(e) => { const id = Number(e.target.value); if (mine?.some((m) => m.id === id)) choose(id); else setSid(id); }}>
+            {seasons.map((s) => <option key={s.id} value={s.id}>{s.name} {s.year}{!isAdmin && !mine?.some((m) => m.id === s.id) ? " (só visualização)" : ""}</option>)}
           </select>
         )}
-        <button className="text-muted hover:text-ice p-1.5 rounded-lg hover:bg-panel2 transition-colors" title="Nova temporada" onClick={() => setCreating((c) => !c)}>
+        {isAdmin && <button className="text-muted hover:text-ice p-1.5 rounded-lg hover:bg-panel2 transition-colors" title="Nova temporada" onClick={() => setCreating((c) => !c)}>
           <Plus size={18} />
-        </button>
+        </button>}
         <nav className="flex flex-wrap gap-1 flex-1">
           {shownTabs.map(({ key, icon: Icon }) => {
             if (key === "Admin" && !isAdmin) return null;
@@ -149,9 +174,16 @@ export default function App() {
         </nav>
         <Bell />
         <button className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ice px-2 py-1.5 rounded-lg hover:bg-panel2 transition-colors"
-          onClick={() => { setToken(null); localStorage.removeItem("is_admin"); setAuthed(false); }}><LogOut size={16} />Sair</button>
+          onClick={() => { setToken(null); localStorage.removeItem("is_admin"); localStorage.removeItem("sid"); setMine(undefined); setPicked(false); setAuthed(false); }}><LogOut size={16} />Sair</button>
       </header>
-      {creating && (
+      {!member && sid && (
+        <div className="mb-6 rounded-xl border border-line bg-panel2 px-4 py-2.5 text-sm text-muted flex items-center gap-2">
+          <Eye size={16} className="text-gold" />
+          {mine && mine.length > 0 ? "Modo visualização: você não participa deste campeonato." : "Você ainda não participa de nenhum campeonato; só dá para visualizar."}
+          {mine?.[0] && <button className="text-teal hover:underline ml-auto" onClick={() => choose(mine[0].id)}>Voltar ao meu campeonato</button>}
+        </div>
+      )}
+      {creating && isAdmin && (
         <div className="mb-6">
           <CreateSeasonForm onCreated={(id) => { setCreating(false); setSid(id); loadSeasons(); }} />
         </div>
@@ -159,7 +191,7 @@ export default function App() {
       {!sid ? (
         !creating && <div className="space-y-3">
           <p className="text-muted">Nenhuma temporada criada ainda.</p>
-          <CreateSeasonForm onCreated={(id) => { setSid(id); loadSeasons(); }} />
+          {isAdmin && <CreateSeasonForm onCreated={(id) => { setSid(id); loadSeasons(); }} />}
         </div>
       ) : <>
         {curTab === "Classificação" && <Standings sid={sid} />}

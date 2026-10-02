@@ -99,6 +99,26 @@ class SingleValidatorTests(TestCase):
         self.assertEqual(r.status_code, 200); self.assertEqual(r.data["status"], "confirmed"); self.assertEqual(r.data["reported_by"], m.player_a_id)
 
 
+class ViewOnlyTests(TestCase):
+    def test_mine_and_non_participant_is_view_only(self):
+        s1, s2 = mk_season(4, swiss_rounds=2), mk_season(4, swiss_rounds=2)
+        sv.advance(s2)
+        user = s1.players.first().user
+        Player.objects.create(season=s2, user=user, name="X", nickname="x")  # participa de s1 e s2
+        outsider = User.objects.create_user("fora@x.com")
+        c = APIClient(); c.force_authenticate(user)
+        self.assertEqual({x["id"] for x in c.get("/api/seasons/mine/").data}, {s1.id, s2.id})
+        c.force_authenticate(outsider)
+        self.assertEqual(c.get("/api/seasons/mine/").data, [])
+        m = Match.objects.filter(round__season=s2).first()
+        r = c.post(f"/api/matches/{m.id}/report/", {"score_a": 1, "score_b": 0}, format="multipart")
+        self.assertEqual(r.status_code, 400); self.assertIn("visualizar", r.data["detail"])
+        self.assertEqual(c.post(f"/api/matches/{m.id}/contest/").status_code, 400)
+        self.assertEqual(c.get(f"/api/seasons/{s2.id}/me/").status_code, 404)
+        self.assertEqual(c.get(f"/api/seasons/{s2.id}/standings/").status_code, 200)  # ler continua liberado
+        m.refresh_from_db(); self.assertEqual(m.status, "pending")
+
+
 class CheckinTests(TestCase):
     def setUp(self):
         self.s1 = Season.objects.create(name="FC", year=2026, jogo="EA FC 26")

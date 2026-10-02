@@ -42,12 +42,21 @@ class MatchS(serializers.ModelSerializer):
     def get_contestable(self, m):
         return m.status == "confirmed" and m.round.season.rounds.last().id == m.round_id
 
+def my_player(season, user):
+    """Jogador do usuário neste campeonato; quem não participa só tem visualização."""
+    p = Player.objects.filter(season=season, user=user).first()
+    if p is None: raise PermissionError("Você não participa deste campeonato: aqui só dá para visualizar.")
+    return p
+
 def err(fn):
     try: return Response(fn())
     except (ValueError, PermissionError) as e: return Response({"detail": str(e)}, status=400)
 
 class SeasonViewSet(viewsets.ModelViewSet):
     queryset = Season.objects.all(); serializer_class = SeasonS; permission_classes = [AdminOrReadOnly]
+    @action(detail=False, permission_classes=[permissions.IsAuthenticated])
+    def mine(self, req):  # campeonatos em que o usuário logado joga (o 1º acesso entra direto no seu, ou escolhe se forem vários)
+        return Response([{**SeasonS(p.season).data, "player": p.id} for p in Player.objects.filter(user=req.user).select_related("season").order_by("-season_id")])
     @action(detail=True)
     def standings(self, req, pk=None):
         return Response([{**{k: v for k, v in r.items() if k != "player"}, "player": PlayerS(r["player"], context={"request": req}).data}
@@ -152,8 +161,7 @@ class MatchViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated])
     def report(self, req, pk=None):  # só uma pessoa valida: o placar enviado já fecha a partida; comprovante opcional
         m, d = self.get_object(), req.data
-        me_ = Player.objects.get(season=m.round.season, user=req.user)
-        return err(lambda: MatchS(sv.submit_result(m, me_, int(d["score_a"]), int(d["score_b"]),
+        return err(lambda: MatchS(sv.submit_result(m, my_player(m.round.season, req.user), int(d["score_a"]), int(d["score_b"]),
                                                    d.get("pen_a") or None, d.get("pen_b") or None,
                                                    req.FILES.get("proof"), str(d.get("et")).lower() == "true")).data)
     @action(detail=True, methods=["post"], url_path="set-result", permission_classes=[permissions.IsAdminUser])
@@ -163,8 +171,8 @@ class MatchViewSet(viewsets.ModelViewSet):
                             MatchS(m).data)[1])
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated])
     def contest(self, req, pk=None):  # o jogador que não lançou o placar discorda: abre disputa para o admin
-        m = self.get_object(); me_ = Player.objects.get(season=m.round.season, user=req.user)
-        return err(lambda: MatchS(sv.contest(m, me_)).data)
+        m = self.get_object()
+        return err(lambda: MatchS(sv.contest(m, my_player(m.round.season, req.user))).data)
     @action(detail=True, methods=["post"], url_path="extend-deadline", permission_classes=[permissions.IsAdminUser])
     def extend_deadline(self, req, pk=None):  # {"deadline": ISO} — só o admin libera mais tempo para lançar o placar
         m = self.get_object()
@@ -176,8 +184,7 @@ class MatchViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="report-leg", permission_classes=[permissions.IsAuthenticated])
     def report_leg(self, req, pk=None):  # confronto de ida-e-volta / melhor-de-3/5: informa o jogo N
         m, d = self.get_object(), req.data
-        me_ = Player.objects.get(season=m.round.season, user=req.user)
-        return err(lambda: (sv.submit_leg_result(m, me_, int(d["leg_number"]), int(d["score_a"]), int(d["score_b"]),
+        return err(lambda: (sv.submit_leg_result(m, my_player(m.round.season, req.user), int(d["leg_number"]), int(d["score_a"]), int(d["score_b"]),
                                                  d.get("pen_a") or None, d.get("pen_b") or None, req.FILES.get("proof"),
                                                  str(d.get("et")).lower() == "true"),
                             MatchS(m).data)[1])
@@ -236,7 +243,9 @@ def import_registrations(req):  # multipart: file=<xlsx>, sheet=<nome da aba, op
 
 @api_view(["GET"])
 def me(req, season_id):
-    p = Player.objects.get(season_id=season_id, user=req.user); s = p.season
+    p = Player.objects.filter(season_id=season_id, user=req.user).select_related("season").first()
+    if p is None: return Response({"detail": "Você não participa deste campeonato."}, status=404)
+    s = p.season
     row = next(r for r in sv.standings(s) if r["player"].id == p.id)
     mine = (Match.objects.filter(round__season=s, player_a=p) | Match.objects.filter(round__season=s, player_b=p)).distinct()
     done = mine.filter(status__in=Match.DONE)
