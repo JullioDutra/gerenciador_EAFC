@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   AlertTriangle, BarChart3, CalendarDays, CheckCircle2, Clock, Filter, FlagTriangleRight, Flame, Goal,
-  Image as ImageIcon, ListOrdered, Scale, Settings2, Shield, ShieldAlert, Sparkles, Swords, Target, Trophy, Upload, UserCircle2, Users,
+  Image as ImageIcon, ListOrdered, UserCheck, Scale, Settings2, Shield, ShieldAlert, Sparkles, Swords, Target, Trophy, Upload, UserCircle2, Users,
 } from "lucide-react";
 import { api, apiBlob, useData } from "./api";
 
@@ -38,6 +38,7 @@ export function Standings({ sid }: { sid: number }) {
   const { data: season } = useData<any>(`/seasons/${sid}/`);
   const th = "px-2 py-2 text-right text-xs font-semibold uppercase tracking-wide text-muted";
   const groups = season?.config?.format === "groups";
+  if (season?.config?.format === "knockout") return <div className="card text-muted">Este campeonato é só mata-mata: não há tabela de classificação. Veja a aba Mata-mata.</div>;
   const buckets: [number | null, any[]][] = [];
   rows?.forEach((r) => { const g = groups ? r.group : null; let b = buckets.find((x) => x[0] === g); if (!b) buckets.push((b = [g, []])); b[1].push(r); });
   return (
@@ -283,12 +284,14 @@ export function Dashboard({ sid }: { sid: number }) {
       <div className="flex items-center gap-3">
         <div className="w-11 h-11 rounded-xl bg-panel2 flex items-center justify-center shrink-0"><Trophy size={22} className="text-gold" /></div>
         <div>
-          <h2 className="text-2xl font-bold">Você está em {me.position}º lugar{me.group ? ` no ${groupName(me.group)}` : ""}</h2>
+          <h2 className="text-2xl font-bold">{me.format === "knockout"
+            ? (me.player.status === "champion" ? "Você é o campeão!" : me.player.status === "eliminated" ? "Você foi eliminado" : "Você está no mata-mata")
+            : <>Você está em {me.position}º lugar{me.group ? ` no ${groupName(me.group)}` : ""}</>}</h2>
           {(me.player.team || me.player.campus) && <p className="text-sm text-muted">{me.player.team}{me.player.team && me.player.campus && " · "}{me.player.campus}</p>}
         </div>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {stat("Pontos", me.points)}{stat("V-E-D", me.record.join("-"))}{stat("Gols marcados", me.gf)}{stat("Saldo", me.gd)}</div>
+        {me.format !== "knockout" && stat("Pontos", me.points)}{stat("V-E-D", me.record.join("-"))}{stat("Gols marcados", me.gf)}{stat("Saldo", me.gd)}</div>
       <div className="card space-y-2">
         <SectionTitle icon={Swords}>Próxima partida</SectionTitle>
         {nm ? <>
@@ -363,6 +366,8 @@ export function Profile({ sid }: { sid: number }) {
 }
 
 /** Check-in do jogador: só o telefone, sem formulário. Busca as pré-inscrições (uma por campeonato) e já loga. */
+/** Pode fazer check-in: há campeonato e o check-in está aberto (ou a pessoa já fez e só vai reentrar). */
+const canGo = (x: any) => x.season && (x.season.checkin_open || x.already_checked_in);
 export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string, sid?: number) => void }) {
   const [phone, setPhone] = useState(""); const [reg, setReg] = useState<any>(); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const [picked, setPicked] = useState<number[]>([]);
@@ -370,7 +375,7 @@ export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string,
     setBusy(true); setErr("");
     try {
       const r = await api("/checkin/lookup/", { method: "POST", body: { phone } }); setReg(r);
-      const ok = (r.registrations as any[]).filter((x) => x.season); setPicked(ok.length === 1 ? [ok[0].id] : []);
+      const ok = (r.registrations as any[]).filter(canGo); setPicked(ok.length === 1 ? [ok[0].id] : []);
     } catch (x: any) { setErr(x.message); } finally { setBusy(false); }
   };
   const confirm = async (ids: number[]) => {
@@ -380,7 +385,7 @@ export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string,
     catch (x: any) { setErr(x.message); } finally { setBusy(false); }
   };
   if (reg) {
-    const regs: any[] = reg.registrations ?? []; const avail = regs.filter((x) => x.season);
+    const regs: any[] = reg.registrations ?? []; const avail = regs.filter(canGo);
     const multi = regs.length > 1;
     const toggle = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
     return (
@@ -394,10 +399,10 @@ export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string,
         {multi && <p className="text-sm">Seu número está em <b>{regs.length} campeonatos</b>. Em qual deles você quer fazer o check-in?</p>}
         <div className="space-y-2">
           {regs.map((x) => (
-            <label key={x.id} className={`flex items-center gap-3 rounded-xl border border-line p-3 text-sm ${x.season ? "cursor-pointer hover:bg-panel2" : "opacity-50"}`}>
-              {multi && <input type="checkbox" disabled={!x.season} checked={picked.includes(x.id)} onChange={() => toggle(x.id)} />}
+            <label key={x.id} className={`flex items-center gap-3 rounded-xl border border-line p-3 text-sm ${canGo(x) ? "cursor-pointer hover:bg-panel2" : "opacity-50"}`}>
+              {multi && <input type="checkbox" disabled={!canGo(x)} checked={picked.includes(x.id)} onChange={() => toggle(x.id)} />}
               <span className="flex-1"><b>{x.jogo || "Campeonato"}</b>{x.equipe && <span className="text-muted"> · {x.equipe}</span>}
-                <span className="block text-xs text-muted">{x.season ? x.season.name : "Nenhum campeonato aberto para esta inscrição ainda."}</span></span>
+                <span className="block text-xs text-muted">{!x.season ? "Nenhum campeonato aberto para esta inscrição ainda." : !canGo(x) ? `${x.season.name} · check-in encerrado` : x.season.name}</span></span>
               {x.already_checked_in && <span className="chip-gold"><CheckCircle2 size={12} />Já fez</span>}
             </label>))}
         </div>
@@ -430,7 +435,7 @@ export function CreateSeasonForm({ onCreated }: { onCreated: (id: number) => voi
   const thisYear = new Date().getFullYear();
   const [f, setF] = useState({ name: "Temporada", year: String(thisYear), jogo: "", format: "league", groups: "4", group_qualify: "2",
     swiss_rounds: "8", direct: "16", playoff_size: "48", playoff_qualify: "16" });
-  const isGroups = f.format === "groups";
+  const isGroups = f.format === "groups"; const isKo = f.format === "knockout";
   const koSize = Number(f.groups || 0) * Number(f.group_qualify || 0);
   const koOk = [2, 4, 8, 16, 32].includes(koSize);
   const [msg, setMsg] = useState("");
@@ -441,7 +446,7 @@ export function CreateSeasonForm({ onCreated }: { onCreated: (id: number) => voi
       if (isGroups && !koOk) { setMsg(`Grupos × classificados por grupo = ${koSize}. Use 2, 4, 8, 16 ou 32 para montar o mata-mata.`); return; }
       const s = await api("/seasons/", { method: "POST", body: {
         name: f.name, year: Number(f.year), jogo: f.jogo.trim(),
-        config: isGroups ? { format: "groups", groups: Number(f.groups), group_qualify: Number(f.group_qualify) }
+        config: isKo ? { format: "knockout" } : isGroups ? { format: "groups", groups: Number(f.groups), group_qualify: Number(f.group_qualify) }
           : { format: "league", swiss_rounds: Number(f.swiss_rounds), direct: Number(f.direct), playoff_size: Number(f.playoff_size), playoff_qualify: Number(f.playoff_qualify) },
       } });
       onCreated(s.id);
@@ -464,12 +469,15 @@ export function CreateSeasonForm({ onCreated }: { onCreated: (id: number) => voi
       <div>
         <span className="text-sm text-muted">Formato da primeira fase</span>
         <div className="flex gap-2 mt-1">
-          {[["league", "Fase de liga"], ["groups", "Fase de grupos"]].map(([k, t]) => (
+          {[["league", "Fase de liga"], ["groups", "Fase de grupos"], ["knockout", "Somente mata-mata"]].map(([k, t]) => (
             <button key={k} type="button" onClick={() => set("format", k)}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${f.format === k ? "bg-royal text-white" : "bg-panel2 border border-line text-muted hover:text-ice"}`}>{t}</button>))}
         </div>
       </div>
-      {isGroups ? <>
+      {isKo ? <p className="text-xs text-muted">
+        Todos os jogadores entram direto no chaveamento (até 32). Se o total não fechar 2, 4, 8, 16 ou 32, os melhores cabeças de chave folgam na 1ª rodada.
+        Quem tiver "seed" definido é posicionado primeiro; os demais são sorteados.
+      </p> : isGroups ? <>
         <div className="flex flex-wrap gap-3">
           {field("groups", "Quantidade de grupos")}
           {field("group_qualify", "Classificam por grupo")}
@@ -524,7 +532,7 @@ function RulesPanel({ sid }: { sid: number }) {
     <div className="card space-y-3">
       <SectionTitle icon={Settings2}>Regras da temporada</SectionTitle>
       <div className="flex flex-wrap gap-4">
-        {cfg.format === "groups"
+        {cfg.format === "knockout" ? null : cfg.format === "groups"
           ? <>{field("groups", "Grupos")}{field("group_qualify", "Classificam por grupo")}</>
           : <>{field("swiss_rounds", "Rodadas da liga")}{field("direct", "Classificação direta")}
             {field("playoff_size", "Tamanho do playoff")}{field("playoff_qualify", "Classificados do playoff")}</>}
@@ -631,6 +639,81 @@ function MatchDeadlinesPanel({ sid, n }: { sid: number; n: (i: number | null) =>
             <button className="btn !py-1 !px-2" disabled={!(val[m.id])} onClick={() => extend(m.id)}>Definir</button>
           </div>);
       })}
+    </div>
+  );
+}
+
+/** Admin: abre/encerra o check-in do campeonato. Encerrado, ninguém novo entra (quem já fez check-in continua entrando). */
+function CheckinPanel({ sid }: { sid: number }) {
+  const { data: season, reload } = useData<any>(`/seasons/${sid}/`);
+  const [msg, setMsg] = useState("");
+  if (!season) return null;
+  const open = season.checkin_open !== false;
+  const toggle = async () => {
+    if (open && !confirm("Encerrar o check-in? Ninguém novo conseguirá entrar neste campeonato.")) return;
+    try { await api(`/seasons/${sid}/`, { method: "PATCH", body: { checkin_open: !open } }); setMsg(open ? "Check-in encerrado." : "Check-in reaberto."); reload(); }
+    catch (x: any) { setMsg(x.message); }
+  };
+  return (
+    <div className="card flex flex-wrap items-center gap-3">
+      <SectionTitle icon={UserCheck}>Check-in</SectionTitle>
+      <span className={open ? "chip-teal" : "chip-rose"}>{open ? "Aberto" : "Encerrado"}</span>
+      <button className={open ? "btn-gold btn" : "btn"} onClick={toggle}>{open ? "Não permitir mais check-in" : "Reabrir check-in"}</button>
+      <span className="text-sm text-teal">{msg}</span>
+    </div>
+  );
+}
+
+const IMPORT_FIELDS: [string, string][] = [["campus", "Campus"], ["team", "Time"], ["status", "Status"], ["platform", "Plataforma"],
+  ["country", "País"], ["curso", "Curso"], ["perfil", "Perfil"], ["vinculo", "Vínculo"], ["jogo", "Jogo da inscrição"]];
+
+/** Admin: traz para este campeonato jogadores de outro que já existe, filtrando por campo (campus, curso, time…) e/ou top N. */
+function ImportPanel({ sid }: { sid: number }) {
+  const { data: seasons } = useData<any[]>("/seasons/");
+  const [src, setSrc] = useState(""); const [filters, setFilters] = useState<{ field: string; value: string }[]>([]); const [top, setTop] = useState("");
+  const [prev, setPrev] = useState<any>(); const [msg, setMsg] = useState("");
+  const { data: values } = useData<Record<string, string[]>>(src ? `/seasons/${src}/filter-values/` : null);
+  const others = seasons?.filter((s) => s.id !== sid) ?? [];
+  const body = (dry: boolean) => ({ source: Number(src), top: top ? Number(top) : undefined, dry_run: dry,
+    filters: Object.fromEntries(filters.filter((f) => f.value.trim()).map((f) => [f.field, f.value.trim()])) });
+  const run = async (dry: boolean) => {
+    setMsg("");
+    try { const r = await api(`/seasons/${sid}/import-from/`, { method: "POST", body: body(dry) }); setPrev(r);
+      if (!dry) setMsg(`${r.new} jogador(es) trazido(s)${r.already ? `; ${r.already} já estavam aqui` : ""}.`); }
+    catch (x: any) { setMsg(x.message); }
+  };
+  const setF = (i: number, patch: object) => { setFilters(filters.map((f, j) => (j === i ? { ...f, ...patch } : f))); setPrev(undefined); };
+  return (
+    <div className="card space-y-3">
+      <SectionTitle icon={Users}>Usar jogadores de outro campeonato</SectionTitle>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-sm block"><span className="text-muted">Campeonato de origem</span>
+          <select className="inp mt-1 !w-56" value={src} onChange={(e) => { setSrc(e.target.value); setPrev(undefined); }}>
+            <option value="">Escolha…</option>{others.map((s) => <option key={s.id} value={s.id}>{s.name} {s.year}</option>)}</select></label>
+        <label className="text-sm block"><span className="text-muted">Só os N primeiros da classificação</span>
+          <input className="inp mt-1 !w-24" type="number" min={1} value={top} onChange={(e) => { setTop(e.target.value); setPrev(undefined); }} placeholder="todos" /></label>
+      </div>
+      {filters.map((f, i) => (
+        <div key={i} className="flex flex-wrap items-center gap-2 text-sm">
+          <select className="inp !w-44 !py-1.5" value={f.field} onChange={(e) => setF(i, { field: e.target.value, value: "" })}>
+            {IMPORT_FIELDS.map(([k, t]) => <option key={k} value={k}>{t}</option>)}</select>
+          <span className="text-muted">contém</span>
+          <input className="inp !w-56 !py-1.5" list={`vals-${i}`} value={f.value} onChange={(e) => setF(i, { value: e.target.value })} placeholder="valor" />
+          <datalist id={`vals-${i}`}>{(values?.[f.field] ?? []).map((v) => <option key={v} value={v} />)}</datalist>
+          <button className="text-muted hover:text-ice" onClick={() => { setFilters(filters.filter((_, j) => j !== i)); setPrev(undefined); }}>remover</button>
+        </div>))}
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="btn-soft btn" onClick={() => setFilters([...filters, { field: "campus", value: "" }])}>+ Filtro</button>
+        <button className="btn-soft btn" disabled={!src} onClick={() => run(true)}>Ver quem entra</button>
+        <button className="btn" disabled={!src || !prev || prev.new === 0} onClick={() => run(false)}>Trazer {prev ? `${prev.new} jogador(es)` : ""}</button>
+        <span className="text-sm text-teal">{msg}</span>
+      </div>
+      {prev?.dry_run && (
+        <div className="text-sm">
+          <p className="text-muted">{prev.matched} atendem ao filtro · {prev.new} novos · {prev.already} já estão neste campeonato</p>
+          <p className="max-h-32 overflow-y-auto">{prev.players.map((p: any) => <span key={p.id} className={`inline-block mr-2 ${p.new ? "" : "text-muted line-through"}`}>{p.nickname}{p.campus && ` (${p.campus})`}</span>)}</p>
+        </div>)}
+      <p className="text-xs text-muted">Vários filtros se combinam (todos precisam bater). Os dados do jogador (nome, nick, time, campus…) são copiados; resultados e pontos não. Só funciona antes da 1ª rodada.</p>
     </div>
   );
 }
@@ -762,6 +845,8 @@ export function Admin({ sid }: { sid: number }) {
         <span className="text-sm text-teal">{msg}</span>
       </div>
       <p className="text-xs text-muted -mt-2">Importe a planilha de inscrições (aba "ea-sports-fc-26") uma vez; os jogadores entram sozinhos fazendo check-in pelo telefone na tela inicial.</p>
+      <CheckinPanel sid={sid} />
+      <ImportPanel sid={sid} />
       <GeneratePanel sid={sid} />
       <ImagesPanel sid={sid} />
       <DisputesPanel sid={sid} n={n} />

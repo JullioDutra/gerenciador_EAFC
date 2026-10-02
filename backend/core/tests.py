@@ -6,10 +6,12 @@ from . import images, services as sv
 from .models import Match, Player, Registration, Season, User
 
 
+_seq = iter(range(10**6))
+
 def mk_season(n, **cfg):
-    s = Season.objects.create(name="T", year=2026, config=cfg)
+    k = next(_seq); s = Season.objects.create(name="T", year=2026, config=cfg)
     for i in range(n):
-        Player.objects.create(season=s, user=User.objects.create_user(f"p{i}@x.com"), name=f"P{i}", nickname=f"nick{i}", team=f"Time{i}")
+        Player.objects.create(season=s, user=User.objects.create_user(f"p{k}_{i}@x.com"), name=f"P{i}", nickname=f"nick{i}", team=f"Time{i}")
     return s
 
 
@@ -133,3 +135,60 @@ class ImageTests(TestCase):
         c.force_authenticate(admin); r = c.get(f"/api/rounds/{rd.id}/image/")
         self.assertEqual((r.status_code, r["Content-Type"]), (200, "image/png")); self.assertTrue(r.content.startswith(b"\x89PNG"))
         self.assertEqual(c.get(f"/api/rounds/{rd.id}/image/?group=1").status_code, 200)
+
+
+class KnockoutOnlyTests(TestCase):
+    def test_full_bracket_with_byes_to_champion(self):
+        s = mk_season(6, format="knockout")
+        r1 = sv.advance(s)[0]
+        self.assertEqual(r1.phase, "qf"); ms = list(r1.matches.all()); self.assertEqual(len(ms), 4)
+        self.assertEqual(sum(m.player_b_id is None for m in ms), 2)  # 8 vagas - 6 jogadores = 2 folgas
+        self.assertTrue(all(m.status == "wo" for m in ms if m.player_b_id is None))
+        play_all(s); self.assertEqual(sv.advance(s)[0].phase, "sf")
+        play_all(s); self.assertEqual(sv.advance(s)[0].phase, "final")
+        play_all(s); sv.advance(s); s.refresh_from_db()
+        self.assertIsNotNone(s.champion_id)
+
+    def test_limits(self):
+        with self.assertRaises(ValueError): sv.advance(mk_season(1, format="knockout"))
+        with self.assertRaises(ValueError): sv.advance(mk_season(33, format="knockout"))
+        self.assertEqual(sv.advance(mk_season(2, format="knockout"))[0].phase, "final")
+
+
+class CheckinClosedTests(TestCase):
+    def test_closed_season_blocks_new_but_not_returning(self):
+        s = Season.objects.create(name="FC", year=2026, jogo="FC")
+        for ph in ("1", "2"): Registration.objects.create(nome="N" + ph, email=f"n{ph}@x.com", phone_norm="6211111111" + ph, jogo="FC")
+        sv.checkin_confirm("62111111111")
+        s.checkin_open = False; s.save()
+        sv.checkin_confirm("62111111111")  # já fez: só reloga
+        with self.assertRaises(ValueError): sv.checkin_confirm("62111111112")
+        self.assertEqual(Player.objects.count(), 1)
+        self.assertFalse(sv.checkin_options("62111111112")[0][1].checkin_open)
+
+
+class ImportFromTests(TestCase):
+    def setUp(self):
+        self.src = Season.objects.create(name="Antigo", year=2025)
+        for i, (campus, st) in enumerate([("Anápolis", "main"), ("Goiânia", "main"), ("Anápolis", "eliminated")]):
+            p = Player.objects.create(season=self.src, user=User.objects.create_user(f"o{i}@x.com"), name=f"O{i}", nickname=f"o{i}", campus=campus, status=st)
+            Registration.objects.create(nome=p.name, phone_norm=f"6200000000{i}", curso="Direito" if i == 0 else "Medicina", player=p)
+        self.dst = Season.objects.create(name="Novo", year=2026)
+
+    def test_filters_and_import(self):
+        r = sv.import_players_from(self.dst, self.src, {"campus": "anáp"}, dry_run=True)
+        self.assertEqual((r["matched"], r["new"]), (2, 2)); self.assertEqual(self.dst.players.count(), 0)  # prévia não grava
+        r = sv.import_players_from(self.dst, self.src, {"campus": "anáp", "status": "main"}, dry_run=False)
+        self.assertEqual(r["new"], 1); self.assertEqual(self.dst.players.get().nickname, "o0")
+        r = sv.import_players_from(self.dst, self.src, {"curso": "medic"}, dry_run=False)  # filtro por campo da inscrição
+        self.assertEqual(r["new"], 2); self.assertEqual(self.dst.players.count(), 3)
+        r = sv.import_players_from(self.dst, self.src, {}, dry_run=False); self.assertEqual((r["new"], r["already"]), (0, 3))
+
+    def test_top_guards_and_api(self):
+        with self.assertRaises(ValueError): sv.import_players_from(self.dst, self.dst)
+        with self.assertRaises(ValueError): sv.select_players(self.src, {"senha": "x"})
+        self.assertEqual(len(sv.select_players(self.src, top=2)), 2)
+        adm = User.objects.create_superuser("a@x.com", "pw"); c = APIClient(); c.force_authenticate(adm)
+        r = c.post(f"/api/seasons/{self.dst.id}/import-from/", {"source": self.src.id, "filters": {"campus": "goi"}, "dry_run": False}, format="json")
+        self.assertEqual((r.status_code, r.data["new"]), (200, 1))
+        self.assertIn("Anápolis", c.get(f"/api/seasons/{self.src.id}/filter-values/").data["campus"])

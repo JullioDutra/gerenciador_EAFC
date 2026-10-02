@@ -18,6 +18,7 @@ class Season(models.Model):
     year = models.PositiveIntegerField()
     config = models.JSONField(default=dict, blank=True)  # sobrescreve DEFAULTS (ver services.py)
     champion = models.ForeignKey("Player", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    checkin_open = models.BooleanField(default=True, help_text="Desligado = ninguém novo consegue fazer check-in (quem já fez continua entrando)")
     jogo = models.CharField(max_length=60, blank=True, help_text="Jogo/campeonato da planilha de inscrições que dá acesso a esta temporada (vazio = aceita qualquer inscrição)")
     def __str__(self): return f"{self.name} {self.year}"
 
