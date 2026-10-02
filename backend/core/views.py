@@ -1,9 +1,10 @@
 import csv, io
+from django.http import HttpResponse
 from rest_framework import permissions, serializers, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from . import services as sv
+from . import images, services as sv
 from .models import *
 
 class AdminOrReadOnly(permissions.BasePermission):
@@ -23,13 +24,23 @@ class PlayerS(serializers.ModelSerializer):
             return req.build_absolute_uri(p.avatar_file.url) if req else p.avatar_file.url
         return p.avatar or None
 
+def _reported_by(obj):  # quem lançou o placar (só uma pessoa valida); o outro jogador pode contestar
+    return int(next(iter(obj.reports))) if obj.reports else None
+
 class LegS(serializers.ModelSerializer):
+    reported_by = serializers.SerializerMethodField()
     class Meta: model = Leg; fields = "__all__"
+    def get_reported_by(self, l): return _reported_by(l)
 
 class MatchS(serializers.ModelSerializer):
     legs = LegS(many=True, read_only=True)
     match_format = serializers.CharField(source="round.match_format", read_only=True)
+    reported_by = serializers.SerializerMethodField()
+    contestable = serializers.SerializerMethodField()
     class Meta: model = Match; fields = "__all__"
+    def get_reported_by(self, m): return _reported_by(m)
+    def get_contestable(self, m):
+        return m.status == "confirmed" and m.round.season.rounds.last().id == m.round_id
 
 def err(fn):
     try: return Response(fn())
@@ -43,7 +54,13 @@ class SeasonViewSet(viewsets.ModelViewSet):
                          for r in sv.standings(self.get_object())])
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAdminUser])
     def advance(self, req, pk=None):
-        return err(lambda: RoundS(sv.advance(self.get_object())).data)
+        """Gera a próxima rodada/fase. Opções (todas opcionais): count (rodadas de uma vez na liga/grupos), start (1º horário),
+        round_gap_hours, slot_minutes, parallel, deadline_hours (prazo p/ lançar o placar)."""
+        s, d = self.get_object(), req.data
+        return err(lambda: RoundS(sv.advance(s, sv._num(d.get("count"), 1, "Rodadas", 1), sv.parse_schedule(s, d)), many=True).data)
+    @action(detail=True, methods=["post"], url_path="draw-groups", permission_classes=[permissions.IsAdminUser])
+    def draw_groups(self, req, pk=None):
+        return err(lambda: PlayerS(sv.draw_groups(self.get_object()), many=True, context={"request": req}).data)
     @action(detail=True)
     def stats(self, req, pk=None):
         return Response(sv.stats(self.get_object()))
@@ -70,6 +87,25 @@ class RoundViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         q = Round.objects.all(); sid = self.request.query_params.get("season")
         return q.filter(season=sid) if sid else q
+    def perform_update(self, serializer):
+        old = serializer.instance.deadline; rd = serializer.save()
+        if rd.deadline != old:  # novo prazo da rodada vale para as partidas que ainda seguiam o prazo antigo
+            rd.matches.exclude(status__in=Match.DONE).filter(deadline=old).update(deadline=rd.deadline)
+    @action(detail=True, methods=["get"], permission_classes=[permissions.IsAdminUser])
+    def image(self, req, pk=None):
+        """PNG com os confrontos da rodada (?group=N filtra um grupo, ?match=ID um confronto só) para mandar no grupo."""
+        rd, p = self.get_object(), req.query_params
+        ms = list(rd.matches.select_related("player_a", "player_b"))
+        if p.get("match"): ms = [m for m in ms if str(m.id) == p["match"]]
+        if p.get("group"): ms = [m for m in ms if str(m.player_a.group) == p["group"]]
+        if not ms: return Response({"detail": "Nenhum confronto para gerar a imagem."}, status=404)
+        season = rd.season; dl = max((m.deadline for m in ms if m.deadline), default=None)
+        sub = f"{season.name} {season.year}" + (f" · Grupo {chr(64 + int(p['group']))}" if p.get("group") else "")
+        png = images.render_matches(f"{rd.name} — {sv.PHASE_LABEL.get(rd.phase, rd.phase)}", sub, ms,
+                                    show_groups=rd.phase == "groups" and not p.get("group"))
+        resp = HttpResponse(png, content_type="image/png")
+        resp["Content-Disposition"] = f'inline; filename="confrontos-rodada-{rd.number}.png"'
+        return resp
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NotificationS; permission_classes = [permissions.IsAuthenticated]
@@ -103,7 +139,7 @@ class MatchViewSet(viewsets.ModelViewSet):
             if p.get(key): q = q.filter(**{f: p[key]})
         return q
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated])
-    def report(self, req, pk=None):  # também confirma: o adversário envia o mesmo placar; comprovante opcional
+    def report(self, req, pk=None):  # só uma pessoa valida: o placar enviado já fecha a partida; comprovante opcional
         m, d = self.get_object(), req.data
         me_ = Player.objects.get(season=m.round.season, user=req.user)
         return err(lambda: MatchS(sv.submit_result(m, me_, int(d["score_a"]), int(d["score_b"]),
@@ -114,6 +150,14 @@ class MatchViewSet(viewsets.ModelViewSet):
         m, d = self.get_object(), req.data
         return err(lambda: (sv.admin_set_result(m, int(d["score_a"]), int(d["score_b"]), d.get("pen_a"), d.get("pen_b")),
                             MatchS(m).data)[1])
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated])
+    def contest(self, req, pk=None):  # o jogador que não lançou o placar discorda: abre disputa para o admin
+        m = self.get_object(); me_ = Player.objects.get(season=m.round.season, user=req.user)
+        return err(lambda: MatchS(sv.contest(m, me_)).data)
+    @action(detail=True, methods=["post"], url_path="extend-deadline", permission_classes=[permissions.IsAdminUser])
+    def extend_deadline(self, req, pk=None):  # {"deadline": ISO} — só o admin libera mais tempo para lançar o placar
+        m = self.get_object()
+        return err(lambda: MatchS(sv.extend_deadline(m, req.data.get("deadline"))).data)
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAdminUser])
     def wo(self, req, pk=None):
         m = self.get_object(); w = Player.objects.get(pk=req.data["winner"])
@@ -140,26 +184,35 @@ def register(req):
 class RegistrationS(serializers.ModelSerializer):
     class Meta: model = Registration; fields = "__all__"
 
-@api_view(["POST"])
-@permission_classes([permissions.AllowAny])
-def checkin_lookup(req):  # {"phone": "..."} -> dados da pré-inscrição, para o jogador conferir antes de confirmar
-    try:
-        reg = sv.checkin_lookup(req.data.get("phone", ""))
-    except ValueError as e:
-        return Response({"detail": str(e)}, status=404)
-    return Response({"nome": reg.nome, "nick": reg.nick, "equipe": reg.equipe, "campus": reg.campus,
-                      "curso": reg.curso, "jogo": reg.jogo, "already_checked_in": reg.checked_in})
+def _reg_data(reg, season):
+    return {"id": reg.id, "jogo": reg.jogo, "equipe": reg.equipe, "campus": reg.campus, "curso": reg.curso,
+            "already_checked_in": reg.checked_in, "nick": reg.nick,
+            "season": {"id": season.id, "name": f"{season.name} {season.year}"} if season else None}
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
-def checkin_confirm(req):  # {"phone": "...", "season": id} -> cria/liga o jogador e já devolve o token de acesso
+def checkin_lookup(req):  # {"phone": "..."} -> inscrições do telefone (uma por campeonato) para o jogador escolher onde fazer check-in
     try:
-        season = Season.objects.get(pk=req.data.get("season"))
-        player, reg = sv.checkin_confirm(req.data.get("phone", ""), season)
-    except (ValueError, Season.DoesNotExist) as e:
-        return Response({"detail": str(e) or "Temporada inválida."}, status=400)
+        opts = sv.checkin_options(req.data.get("phone", ""))
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=404)
+    reg = opts[0][0]
+    return Response({"nome": reg.nome, "nick": reg.nick, "equipe": reg.equipe, "campus": reg.campus,
+                      "curso": reg.curso, "jogo": reg.jogo, "already_checked_in": reg.checked_in,
+                      "registrations": [_reg_data(r, s) for r, s in opts]})
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def checkin_confirm(req):  # {"phone", "registrations": [ids] (vazio = todas), "season": id (opcional, só de reserva)}
+    try:
+        fallback = Season.objects.filter(pk=req.data.get("season")).first()
+        done = sv.checkin_confirm(req.data.get("phone", ""), fallback, req.data.get("registrations") or None)
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
+    player, reg = done[0]
     token, _ = Token.objects.get_or_create(user=player.user)
-    return Response({"token": token.key, "player": PlayerS(player, context={"request": req}).data, "campus": reg.campus})
+    return Response({"token": token.key, "player": PlayerS(player, context={"request": req}).data, "campus": reg.campus,
+                     "seasons": [p.season_id for p, _ in done], "players": PlayerS([p for p, _ in done], many=True, context={"request": req}).data})
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAdminUser])
@@ -177,7 +230,7 @@ def me(req, season_id):
     mine = (Match.objects.filter(round__season=s, player_a=p) | Match.objects.filter(round__season=s, player_b=p)).distinct()
     done = mine.filter(status__in=Match.DONE)
     nxt = mine.exclude(status__in=Match.DONE).first(); last = done.last()
-    return Response({"player": PlayerS(p, context={"request": req}).data, "position": row["pos"], "zone": row["zone"], "points": row["pts"],
+    return Response({"player": PlayerS(p, context={"request": req}).data, "group": row["group"], "position": row["pos"], "zone": row["zone"], "points": row["pts"],
         "record": [row["v"], row["e"], row["d"]], "gf": row["gp"], "ga": row["gc"], "gd": row["sg"],
         "next_match": MatchS(nxt).data if nxt else None, "last_match": MatchS(last).data if last else None,
         "history": MatchS(done, many=True).data})

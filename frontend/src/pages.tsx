@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   AlertTriangle, BarChart3, CalendarDays, CheckCircle2, Clock, Filter, FlagTriangleRight, Flame, Goal,
-  ListOrdered, Scale, Settings2, Shield, ShieldAlert, Sparkles, Swords, Target, Trophy, Upload, UserCircle2, Users,
+  Image as ImageIcon, ListOrdered, Scale, Settings2, Shield, ShieldAlert, Sparkles, Swords, Target, Trophy, Upload, UserCircle2, Users,
 } from "lucide-react";
-import { api, useData } from "./api";
+import { api, apiBlob, useData } from "./api";
 
 const ZONE: Record<string, string> = { direct: "border-l-teal", playoff: "border-l-gold", out: "border-l-rose-400/70" };
 const LABEL: Record<string, string> = { pending: "Pendente", awaiting: "Aguardando confirmação", confirmed: "Confirmado",
@@ -28,27 +28,38 @@ function useNames(sid: number) {
   return { rows: data, n: (id: number | null) => (id ? names[id] ?? `#${id}` : "Folga") };
 }
 const score = (m: any) => (m.score_a === null ? "—" : `${m.score_a} x ${m.score_b}${m.pen_a != null ? ` (${m.pen_a}-${m.pen_b} pên.)` : ""}`);
+const fmtDT = (v?: string | null) => (v ? new Date(v).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
+const groupName = (g: number | null) => (g ? `Grupo ${String.fromCharCode(64 + g)}` : "Sem grupo");
+const toLocalInput = (v?: string | null) => { if (!v) return ""; const d = new Date(v); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
 const Err = ({ e }: { e: string }) => (e ? <p className="text-red-400 text-sm">{e}</p> : null);
 
 export function Standings({ sid }: { sid: number }) {
   const { rows } = useNames(sid);
+  const { data: season } = useData<any>(`/seasons/${sid}/`);
   const th = "px-2 py-2 text-right text-xs font-semibold uppercase tracking-wide text-muted";
+  const groups = season?.config?.format === "groups";
+  const buckets: [number | null, any[]][] = [];
+  rows?.forEach((r) => { const g = groups ? r.group : null; let b = buckets.find((x) => x[0] === g); if (!b) buckets.push((b = [g, []])); b[1].push(r); });
   return (
-    <div className="card overflow-x-auto space-y-3">
-      <SectionTitle icon={ListOrdered}>Classificação</SectionTitle>
-      <table className="w-full text-sm">
-        <thead><tr><th className={th}>Pos</th><th className={th + " text-left"}>Jogador</th>
-          {["J", "V", "E", "D", "GP", "GC", "SG", "Pts"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
-        <tbody>{rows?.map((r) => (
-          <tr key={r.player.id} className={`border-l-2 border-t border-t-line ${ZONE[r.zone]}`}>
-            <td className="px-2 py-1.5 text-right text-muted">{r.pos}</td>
-            <td className="px-2 py-1.5 font-medium">{r.player.nickname}{r.player.team && <span className="text-muted font-normal"> ({r.player.team})</span>}</td>
-            {[r.j, r.v, r.e, r.d, r.gp, r.gc, r.sg].map((v, i) => <td key={i} className="px-2 text-right text-muted">{v}</td>)}
-            <td className="px-2 text-right font-bold text-gold">{r.pts}</td>
-          </tr>))}</tbody>
-      </table>
+    <div className="space-y-4">
+      {buckets.map(([g, list]) => (
+        <div key={g ?? "all"} className="card overflow-x-auto space-y-3">
+          <SectionTitle icon={ListOrdered}>{groups ? groupName(g) : "Classificação"}</SectionTitle>
+          <table className="w-full text-sm">
+            <thead><tr><th className={th}>Pos</th><th className={th + " text-left"}>Jogador</th>
+              {["J", "V", "E", "D", "GP", "GC", "SG", "Pts"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
+            <tbody>{list.map((r) => (
+              <tr key={r.player.id} className={`border-l-2 border-t border-t-line ${ZONE[r.zone]}`}>
+                <td className="px-2 py-1.5 text-right text-muted">{r.pos}</td>
+                <td className="px-2 py-1.5 font-medium">{r.player.nickname}{r.player.team && <span className="text-muted font-normal"> ({r.player.team})</span>}</td>
+                {[r.j, r.v, r.e, r.d, r.gp, r.gc, r.sg].map((v, i) => <td key={i} className="px-2 text-right text-muted">{v}</td>)}
+                <td className="px-2 text-right font-bold text-gold">{r.pts}</td>
+              </tr>))}</tbody>
+          </table>
+        </div>))}
       <div className="flex flex-wrap gap-3 text-xs text-muted pt-1">
-        <span className="chip-teal">Classificação direta</span><span className="chip-gold">Playoff</span><span className="chip-rose">Eliminado</span>
+        {groups ? <><span className="chip-teal">Classificado para o mata-mata</span><span className="chip-rose">Fora</span></>
+          : <><span className="chip-teal">Classificação direta</span><span className="chip-gold">Playoff</span><span className="chip-rose">Eliminado</span></>}
       </div>
     </div>
   );
@@ -57,7 +68,7 @@ export function Standings({ sid }: { sid: number }) {
 const FORMAT_LABEL: Record<string, string> = { single: "Partida única", bo3: "Melhor de 3", bo5: "Melhor de 5", two_legs: "Ida e volta" };
 const legScore = (l: any) => (l.score_a === null ? "—" : `${l.score_a}-${l.score_b}${l.pen_a != null ? ` (${l.pen_a}-${l.pen_b} pên.)` : ""}${l.extra_time ? " pró." : ""}`);
 
-function MatchRow({ m, n }: { m: any; n: (i: number | null) => string }) {
+function MatchRow({ m, n, extra }: { m: any; n: (i: number | null) => string; extra?: ReactNode }) {
   const multi = m.match_format && m.match_format !== "single";
   return (
     <div className="py-2.5 border-t border-line text-sm">
@@ -68,6 +79,11 @@ function MatchRow({ m, n }: { m: any; n: (i: number | null) => string }) {
         <span className="font-medium">{n(m.player_b)}</span>
         <StatusChip status={m.status} />
       </div>
+      {extra && <div className="text-right mt-1">{extra}</div>}
+      {(m.scheduled_at || m.deadline) && !DONE.includes(m.status) && (
+        <p className="text-xs text-muted text-right mt-1 flex items-center justify-end gap-1.5"><Clock size={12} />
+          {m.scheduled_at && <>Jogo: {fmtDT(m.scheduled_at)} · </>}placar até {fmtDT(m.deadline)}</p>
+      )}
       {multi && m.legs?.length > 0 && (
         <p className="text-xs text-muted text-right mt-1">{FORMAT_LABEL[m.match_format]} · {m.legs.map((l: any) => `Jogo ${l.number}: ${legScore(l)}`).join(" · ")}</p>
       )}
@@ -107,7 +123,7 @@ function ReportForm({ labelA, labelB, onSubmit }: { labelA: string; labelB: stri
   };
   return (
     <div className="space-y-2">
-      <p className="text-sm">Informe o placar ({labelA} x {labelB}). O adversário confirma enviando o mesmo placar.</p>
+      <p className="text-sm">Informe o placar ({labelA} x {labelB}). Basta um dos dois lançar: o resultado já vale, e quem não lançou pode contestar.</p>
       <div className="flex flex-wrap gap-2 items-center">
         <input className="inp !w-20" type="number" min={0} value={a} onChange={(x) => setA(x.target.value)} />
         <input className="inp !w-20" type="number" min={0} value={b} onChange={(x) => setB(x.target.value)} />
@@ -259,13 +275,15 @@ export function Dashboard({ sid }: { sid: number }) {
   const multi = nm && nm.match_format && nm.match_format !== "single";
   const legsDone = nm?.legs?.filter((l: any) => DONE.includes(l.status)) ?? [];
   const nextLeg = legsDone.length + 1;
+  const locked = !!nm?.deadline && new Date(nm.deadline).getTime() < Date.now();
+  const contest = async (id: number) => { if (!confirm("Contestar este resultado? O organizador vai decidir.")) return; try { await api(`/matches/${id}/contest/`, { method: "POST" }); reload(); } catch (x: any) { alert(x.message); } };
   const stat = (t: string, v: any) => <div className="card text-center"><div className="font-display text-3xl font-extrabold text-gold">{v}</div><div className="text-xs text-muted mt-0.5">{t}</div></div>;
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <div className="w-11 h-11 rounded-xl bg-panel2 flex items-center justify-center shrink-0"><Trophy size={22} className="text-gold" /></div>
         <div>
-          <h2 className="text-2xl font-bold">Você está em {me.position}º lugar</h2>
+          <h2 className="text-2xl font-bold">Você está em {me.position}º lugar{me.group ? ` no ${groupName(me.group)}` : ""}</h2>
           {(me.player.team || me.player.campus) && <p className="text-sm text-muted">{me.player.team}{me.player.team && me.player.campus && " · "}{me.player.campus}</p>}
         </div>
       </div>
@@ -275,18 +293,21 @@ export function Dashboard({ sid }: { sid: number }) {
         <SectionTitle icon={Swords}>Próxima partida</SectionTitle>
         {nm ? <>
           <p>Adversário: <b>{n(nm.player_a === me.player.id ? nm.player_b : nm.player_a)}</b>{multi && <span className="text-muted text-sm"> · {FORMAT_LABEL[nm.match_format]}</span>}</p>
-          <p className="text-sm text-muted flex items-center gap-1.5"><CalendarDays size={14} />{nm.deadline ? new Date(nm.deadline).toLocaleString("pt-BR") : "sem prazo"} <StatusChip status={nm.status} /></p>
+          <p className="text-sm text-muted flex items-center gap-1.5"><CalendarDays size={14} />{nm.scheduled_at && <>Jogo: {fmtDT(nm.scheduled_at)} · </>}placar até {nm.deadline ? fmtDT(nm.deadline) : "sem prazo"} <StatusChip status={nm.status} /></p>
           {multi && nm.legs?.length > 0 && (
             <ul className="text-sm text-muted">{nm.legs.map((l: any) => <li key={l.number}>Jogo {l.number}: {legScore(l)}</li>)}</ul>)}
-          <ReportForm labelA={n(nm.player_a)} labelB={n(nm.player_b)} onSubmit={async (f) => {
-            if (multi) f.append("leg_number", String(nextLeg));
-            await api(`/matches/${nm.id}/${multi ? "report-leg" : "report"}/`, { method: "POST", form: f }); reload();
-          }} />
+          {nm.status === "disputed" ? <p className="text-sm text-gold">Resultado contestado: aguarde o organizador decidir.</p>
+            : locked ? <p className="text-sm text-rose-300 flex items-center gap-1.5"><AlertTriangle size={15} />Prazo encerrado. Só o organizador pode liberar mais tempo ou lançar o placar.</p>
+            : <ReportForm labelA={n(nm.player_a)} labelB={n(nm.player_b)} onSubmit={async (f) => {
+              if (multi) f.append("leg_number", String(nextLeg));
+              await api(`/matches/${nm.id}/${multi ? "report-leg" : "report"}/`, { method: "POST", form: f }); reload();
+            }} />}
         </> : <p className="text-muted">Nenhuma partida pendente.</p>}
       </div>
       <div className="card"><SectionTitle icon={ListOrdered}>Histórico</SectionTitle>
         {me.history.length === 0 && <p className="text-muted text-sm mt-2">Nenhuma partida disputada ainda.</p>}
-        {me.history.map((m: any) => <MatchRow key={m.id} m={m} n={n} />)}</div>
+        {me.history.map((m: any) => <MatchRow key={m.id} m={m} n={n} extra={m.contestable && m.reported_by !== me.player.id &&
+          <button className="text-xs text-rose-300 hover:underline" onClick={() => contest(m.id)}>Contestar resultado</button>} />)}</div>
     </div>
   );
 }
@@ -341,21 +362,27 @@ export function Profile({ sid }: { sid: number }) {
   );
 }
 
-/** Check-in do jogador: só o telefone, sem formulário. Busca a pré-inscrição e já loga. */
-export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string) => void }) {
+/** Check-in do jogador: só o telefone, sem formulário. Busca as pré-inscrições (uma por campeonato) e já loga. */
+export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string, sid?: number) => void }) {
   const [phone, setPhone] = useState(""); const [reg, setReg] = useState<any>(); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [picked, setPicked] = useState<number[]>([]);
   const lookup = async () => {
     setBusy(true); setErr("");
-    try { setReg(await api("/checkin/lookup/", { method: "POST", body: { phone } })); }
-    catch (x: any) { setErr(x.message); } finally { setBusy(false); }
+    try {
+      const r = await api("/checkin/lookup/", { method: "POST", body: { phone } }); setReg(r);
+      const ok = (r.registrations as any[]).filter((x) => x.season); setPicked(ok.length === 1 ? [ok[0].id] : []);
+    } catch (x: any) { setErr(x.message); } finally { setBusy(false); }
   };
-  const confirm = async () => {
-    if (!sid) { setErr("Nenhum campeonato disponível para check-in ainda."); return; }
+  const confirm = async (ids: number[]) => {
+    if (ids.length === 0) { setErr("Escolha em qual campeonato fazer o check-in."); return; }
     setBusy(true); setErr("");
-    try { const r = await api("/checkin/confirm/", { method: "POST", body: { phone, season: sid } }); onDone(r.token); }
+    try { const r = await api("/checkin/confirm/", { method: "POST", body: { phone, season: sid, registrations: ids } }); onDone(r.token, r.seasons?.[0]); }
     catch (x: any) { setErr(x.message); } finally { setBusy(false); }
   };
   if (reg) {
+    const regs: any[] = reg.registrations ?? []; const avail = regs.filter((x) => x.season);
+    const multi = regs.length > 1;
+    const toggle = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
     return (
       <div className="card space-y-3">
         <p className="text-sm text-muted">Encontramos sua inscrição:</p>
@@ -364,11 +391,24 @@ export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string)
           <p className="text-sm text-muted">{reg.equipe && <>Time: <span className="text-ice">{reg.equipe}</span> · </>}{reg.campus}</p>
           {reg.curso && <p className="text-xs text-muted">{reg.curso}</p>}
         </div>
-        {reg.already_checked_in && <p className="text-xs text-gold flex items-center gap-1"><CheckCircle2 size={13} />Você já fez check-in antes — confirmar de novo só entra na sua conta.</p>}
+        {multi && <p className="text-sm">Seu número está em <b>{regs.length} campeonatos</b>. Em qual deles você quer fazer o check-in?</p>}
+        <div className="space-y-2">
+          {regs.map((x) => (
+            <label key={x.id} className={`flex items-center gap-3 rounded-xl border border-line p-3 text-sm ${x.season ? "cursor-pointer hover:bg-panel2" : "opacity-50"}`}>
+              {multi && <input type="checkbox" disabled={!x.season} checked={picked.includes(x.id)} onChange={() => toggle(x.id)} />}
+              <span className="flex-1"><b>{x.jogo || "Campeonato"}</b>{x.equipe && <span className="text-muted"> · {x.equipe}</span>}
+                <span className="block text-xs text-muted">{x.season ? x.season.name : "Nenhum campeonato aberto para esta inscrição ainda."}</span></span>
+              {x.already_checked_in && <span className="chip-gold"><CheckCircle2 size={12} />Já fez</span>}
+            </label>))}
+        </div>
+        {!multi && regs[0]?.already_checked_in && <p className="text-xs text-gold flex items-center gap-1"><CheckCircle2 size={13} />Você já fez check-in antes — confirmar de novo só entra na sua conta.</p>}
         <Err e={err} />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button className="btn-soft btn flex-1 justify-center" onClick={() => setReg(undefined)}>Não sou eu</button>
-          <button className="btn flex-1 justify-center" onClick={confirm} disabled={busy}>{busy ? "Entrando…" : "Confirmar check-in"}</button>
+          {multi ? <>
+            <button className="btn flex-1 justify-center" onClick={() => confirm(picked)} disabled={busy || picked.length === 0}>{busy ? "Entrando…" : `Check-in nos selecionados (${picked.length})`}</button>
+            {avail.length > 1 && <button className="btn-gold btn flex-1 justify-center" onClick={() => confirm(avail.map((x) => x.id))} disabled={busy}>Nos dois / todos</button>}
+          </> : <button className="btn flex-1 justify-center" onClick={() => confirm(avail.map((x) => x.id))} disabled={busy || avail.length === 0}>{busy ? "Entrando…" : "Confirmar check-in"}</button>}
         </div>
       </div>
     );
@@ -388,15 +428,21 @@ export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string)
 
 export function CreateSeasonForm({ onCreated }: { onCreated: (id: number) => void }) {
   const thisYear = new Date().getFullYear();
-  const [f, setF] = useState({ name: "Temporada", year: String(thisYear), swiss_rounds: "8", direct: "16", playoff_size: "48", playoff_qualify: "16" });
+  const [f, setF] = useState({ name: "Temporada", year: String(thisYear), jogo: "", format: "league", groups: "4", group_qualify: "2",
+    swiss_rounds: "8", direct: "16", playoff_size: "48", playoff_qualify: "16" });
+  const isGroups = f.format === "groups";
+  const koSize = Number(f.groups || 0) * Number(f.group_qualify || 0);
+  const koOk = [2, 4, 8, 16, 32].includes(koSize);
   const [msg, setMsg] = useState("");
   const set = (k: string, v: string) => setF({ ...f, [k]: v });
   const total = Number(f.direct || 0) + Number(f.playoff_size || 0);
   const create = async () => {
     try {
+      if (isGroups && !koOk) { setMsg(`Grupos × classificados por grupo = ${koSize}. Use 2, 4, 8, 16 ou 32 para montar o mata-mata.`); return; }
       const s = await api("/seasons/", { method: "POST", body: {
-        name: f.name, year: Number(f.year),
-        config: { swiss_rounds: Number(f.swiss_rounds), direct: Number(f.direct), playoff_size: Number(f.playoff_size), playoff_qualify: Number(f.playoff_qualify) },
+        name: f.name, year: Number(f.year), jogo: f.jogo.trim(),
+        config: isGroups ? { format: "groups", groups: Number(f.groups), group_qualify: Number(f.group_qualify) }
+          : { format: "league", swiss_rounds: Number(f.swiss_rounds), direct: Number(f.direct), playoff_size: Number(f.playoff_size), playoff_qualify: Number(f.playoff_qualify) },
       } });
       onCreated(s.id);
     } catch (x: any) { setMsg(x.message); }
@@ -413,17 +459,38 @@ export function CreateSeasonForm({ onCreated }: { onCreated: (id: number) => voi
         <label className="text-sm block"><span className="text-muted">Ano</span>
           <input className="inp mt-1" type="number" value={f.year} onChange={(e) => set("year", e.target.value)} /></label>
       </div>
-      <div className="flex flex-wrap gap-3">
-        {field("swiss_rounds", "Rodadas da fase de liga")}
-        {field("direct", "Classificam direto")}
-        {field("playoff_size", "Vão para o playoff")}
-        {field("playoff_qualify", "Classificados do playoff")}
+      <label className="text-sm block"><span className="text-muted">Campeonato/jogo da inscrição (opcional — liga o check-in a esta temporada)</span>
+        <input className="inp mt-1" placeholder="ex.: ea-sports-fc-26" value={f.jogo} onChange={(e) => set("jogo", e.target.value)} /></label>
+      <div>
+        <span className="text-sm text-muted">Formato da primeira fase</span>
+        <div className="flex gap-2 mt-1">
+          {[["league", "Fase de liga"], ["groups", "Fase de grupos"]].map(([k, t]) => (
+            <button key={k} type="button" onClick={() => set("format", k)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${f.format === k ? "bg-royal text-white" : "bg-panel2 border border-line text-muted hover:text-ice"}`}>{t}</button>))}
+        </div>
       </div>
-      <p className="text-xs text-muted">
-        Some quantos jogadores vão participar da fase de liga (o total é definido por quantos você cadastrar ou importar depois — não há limite fixo aqui).
-        Com os valores acima: os {f.direct} melhores vão direto para a fase principal, os próximos {f.playoff_size} disputam o playoff
-        (do qual saem {f.playoff_qualify} classificados) e o restante é eliminado. Para isso fechar, sua fase de liga deve ter pelo menos {total || 0} jogadores.
-      </p>
+      {isGroups ? <>
+        <div className="flex flex-wrap gap-3">
+          {field("groups", "Quantidade de grupos")}
+          {field("group_qualify", "Classificam por grupo")}
+        </div>
+        <p className="text-xs text-muted">
+          Os jogadores são sorteados em {f.groups} grupos e jogam todos contra todos dentro do grupo. Os {f.group_qualify} primeiros de cada grupo
+          seguem para o mata-mata ({koSize || 0} classificados{koOk ? "" : " — use 2, 4, 8, 16 ou 32"}).
+        </p>
+      </> : <>
+        <div className="flex flex-wrap gap-3">
+          {field("swiss_rounds", "Rodadas da fase de liga")}
+          {field("direct", "Classificam direto")}
+          {field("playoff_size", "Vão para o playoff")}
+          {field("playoff_qualify", "Classificados do playoff")}
+        </div>
+        <p className="text-xs text-muted">
+          Some quantos jogadores vão participar da fase de liga (o total é definido por quantos você cadastrar ou importar depois — não há limite fixo aqui).
+          Com os valores acima: os {f.direct} melhores vão direto para a fase principal, os próximos {f.playoff_size} disputam o playoff
+          (do qual saem {f.playoff_qualify} classificados) e o restante é eliminado. Para isso fechar, sua fase de liga deve ter pelo menos {total || 0} jogadores.
+        </p>
+      </>}
       <div className="flex items-center gap-3">
         <button className="btn" onClick={create}>Criar temporada</button>
         <span className="text-sm text-rose-300">{msg}</span>
@@ -457,9 +524,11 @@ function RulesPanel({ sid }: { sid: number }) {
     <div className="card space-y-3">
       <SectionTitle icon={Settings2}>Regras da temporada</SectionTitle>
       <div className="flex flex-wrap gap-4">
-        {field("swiss_rounds", "Rodadas Swiss")}{field("direct", "Classificação direta")}
-        {field("playoff_size", "Tamanho do playoff")}{field("playoff_qualify", "Classificados do playoff")}
-        {field("round_days", "Dias por rodada")}
+        {cfg.format === "groups"
+          ? <>{field("groups", "Grupos")}{field("group_qualify", "Classificam por grupo")}</>
+          : <>{field("swiss_rounds", "Rodadas da liga")}{field("direct", "Classificação direta")}
+            {field("playoff_size", "Tamanho do playoff")}{field("playoff_qualify", "Classificados do playoff")}</>}
+        {field("round_days", "Dias por rodada")}{field("score_deadline_hours", "Prazo do placar (h)")}
       </div>
       <div className="flex flex-wrap gap-4">
         {field("win", "Pontos por vitória", "w-14")}{field("draw", "Pontos por empate", "w-14")}{field("loss", "Pontos por derrota", "w-14")}
@@ -480,16 +549,22 @@ function RulesPanel({ sid }: { sid: number }) {
 
 function PlayersPanel({ sid }: { sid: number }) {
   const { data: players, reload } = useData<any[]>(`/players/?season=${sid}`);
+  const { data: season } = useData<any>(`/seasons/${sid}/`);
+  const groups = season?.config?.format === "groups"; const nGroups = Number(season?.config?.groups ?? 4);
   const [msg, setMsg] = useState(""); const [pen, setPen] = useState<Record<number, string>>({}); const [reason, setReason] = useState<Record<number, string>>({});
   const run = async (fn: () => Promise<any>, ok: string) => { try { await fn(); setMsg(ok); reload(); } catch (x: any) { setMsg(x.message); } };
   return (
     <div className="card space-y-2">
       <SectionTitle icon={Users}>Jogadores</SectionTitle>
       <span className="text-sm text-teal">{msg}</span>
+      {groups && <button className="btn-soft btn" onClick={() => confirm("Sortear os grupos de novo? Só é possível antes da 1ª rodada.") && run(() => api(`/seasons/${sid}/draw-groups/`, { method: "POST" }), "Grupos sorteados.")}>
+        <Shield size={16} />Sortear grupos</button>}
       <div className="max-h-96 overflow-y-auto space-y-1">
         {players?.map((p) => (
           <div key={p.id} className="flex flex-wrap items-center gap-2 py-1.5 border-t border-line text-sm">
             <span className="flex-1 font-medium">{p.nickname}</span>
+            {groups && <select className="inp !w-28 !py-1" value={p.group ?? ""} onChange={(e) => run(() => api(`/players/${p.id}/`, { method: "PATCH", body: { group: e.target.value ? Number(e.target.value) : null } }), "Grupo atualizado.")}>
+              <option value="">Sem grupo</option>{Array.from({ length: nGroups }, (_, i) => <option key={i} value={i + 1}>{groupName(i + 1)}</option>)}</select>}
             <select className="inp !w-40 !py-1" value={p.status} onChange={(e) => run(() => api(`/players/${p.id}/`, { method: "PATCH", body: { status: e.target.value } }), "Status atualizado.")}>
               {Object.entries(PLAYER_STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
@@ -522,7 +597,119 @@ function DeadlinesPanel({ sid }: { sid: number }) {
           </select>
           <input className="inp !w-56 !py-1" type="datetime-local" defaultValue={r.deadline?.slice(0, 16)} onBlur={(e) => e.target.value && save(r.id, { deadline: new Date(e.target.value).toISOString() }, "Prazo atualizado.")} />
         </div>))}
-      <p className="text-xs text-muted">Mudar o formato só afeta jogos ainda não iniciados nesta rodada.</p>
+      <p className="text-xs text-muted">Mudar o formato só afeta jogos ainda não iniciados nesta rodada. Mudar o prazo da rodada vale para as partidas que ainda seguiam o prazo antigo.</p>
+    </div>
+  );
+}
+
+/** Admin: prazo de cada partida pendente. Passou do prazo, os jogadores não lançam mais placar — só o admin libera mais tempo. */
+function MatchDeadlinesPanel({ sid, n }: { sid: number; n: (i: number | null) => string }) {
+  const { data: rounds } = useData<any[]>(`/rounds/?season=${sid}`);
+  const [rid, setRid] = useState<number>(); const cur = rid ?? rounds?.at(-1)?.id;
+  const { data: ms, reload } = useData<any[]>(cur ? `/matches/?round=${cur}` : null);
+  const [msg, setMsg] = useState(""); const [val, setVal] = useState<Record<number, string>>({});
+  const extend = async (id: number, hours?: number) => {
+    const m = ms!.find((x) => x.id === id)!;
+    const iso = hours ? new Date(Math.max(Date.now(), new Date(m.deadline ?? Date.now()).getTime()) + hours * 3600e3).toISOString() : new Date(val[id]).toISOString();
+    try { await api(`/matches/${id}/extend-deadline/`, { method: "POST", body: { deadline: iso } }); setMsg("Prazo atualizado."); reload(); } catch (x: any) { setMsg(x.message); }
+  };
+  const open = ms?.filter((m) => !DONE.includes(m.status) && m.player_b);
+  return (
+    <div className="card space-y-2">
+      <SectionTitle icon={Clock}>Liberar mais tempo para o placar</SectionTitle>
+      <div className="flex flex-wrap gap-1.5">{rounds?.map((r) => (
+        <button key={r.id} onClick={() => setRid(r.id)} className={`px-3 py-1 rounded-lg text-sm ${cur === r.id ? "bg-royal text-white" : "bg-panel2 border border-line text-muted"}`}>{r.name}</button>))}</div>
+      <span className="text-sm text-teal">{msg}</span>
+      {open?.length === 0 && <p className="text-muted text-sm">Nenhuma partida pendente nesta rodada.</p>}
+      {open?.map((m) => {
+        const late = m.deadline && new Date(m.deadline).getTime() < Date.now();
+        return (
+          <div key={m.id} className="flex flex-wrap items-center gap-2 py-1.5 border-t border-line text-sm">
+            <span className="flex-1">{n(m.player_a)} x {n(m.player_b)} <span className={late ? "text-rose-300" : "text-muted"}>· até {fmtDT(m.deadline)}{late && " (encerrado)"}</span></span>
+            <button className="btn-soft btn !py-1 !px-2" onClick={() => extend(m.id, 24)}>+24h</button>
+            <input className="inp !w-52 !py-1" type="datetime-local" value={val[m.id] ?? toLocalInput(m.deadline)} onChange={(e) => setVal({ ...val, [m.id]: e.target.value })} />
+            <button className="btn !py-1 !px-2" disabled={!(val[m.id])} onClick={() => extend(m.id)}>Definir</button>
+          </div>);
+      })}
+    </div>
+  );
+}
+
+/** Admin: gera a imagem dos confrontos de uma rodada (ou de um grupo/jogo) para conferir e mandar no grupo. */
+function ImagesPanel({ sid }: { sid: number }) {
+  const { data: rounds } = useData<any[]>(`/rounds/?season=${sid}`);
+  const { data: season } = useData<any>(`/seasons/${sid}/`);
+  const [rid, setRid] = useState<number>(); const [group, setGroup] = useState(""); const [url, setUrl] = useState<string>(); const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(false);
+  const cur = rounds?.find((r) => r.id === rid) ?? rounds?.at(-1);
+  const nGroups = cur?.phase === "groups" ? Number(season?.config?.groups ?? 0) : 0;
+  const make = async () => {
+    if (!cur) return; setBusy(true); setMsg("");
+    try { const b = await apiBlob(`/rounds/${cur.id}/image/${group ? `?group=${group}` : ""}`); setUrl((old) => { if (old) URL.revokeObjectURL(old); return URL.createObjectURL(b); }); }
+    catch (x: any) { setMsg(x.message); } finally { setBusy(false); }
+  };
+  const fileName = `confrontos-${(cur?.name ?? "rodada").toLowerCase().replace(/\s+/g, "-")}${group ? `-grupo-${String.fromCharCode(64 + Number(group))}` : ""}.png`;
+  const share = async () => {
+    const blob = await (await fetch(url!)).blob(); const file = new File([blob], fileName, { type: "image/png" });
+    if ((navigator as any).canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: cur?.name }); } catch { /* cancelado */ } }
+    else setMsg("Seu navegador não abre o compartilhamento: use Baixar e envie no grupo.");
+  };
+  return (
+    <div className="card space-y-3">
+      <SectionTitle icon={ImageIcon}>Imagem dos confrontos</SectionTitle>
+      <div className="flex flex-wrap gap-1.5">{rounds?.map((r) => (
+        <button key={r.id} onClick={() => { setRid(r.id); setGroup(""); setUrl(undefined); }} className={`px-3 py-1 rounded-lg text-sm ${cur?.id === r.id ? "bg-royal text-white" : "bg-panel2 border border-line text-muted"}`}>{r.name}</button>))}</div>
+      <div className="flex flex-wrap items-center gap-2">
+        {nGroups > 0 && <select className="inp !w-40 !py-1.5" value={group} onChange={(e) => { setGroup(e.target.value); setUrl(undefined); }}>
+          <option value="">Todos os grupos</option>{Array.from({ length: nGroups }, (_, i) => <option key={i} value={i + 1}>{groupName(i + 1)}</option>)}</select>}
+        <button className="btn" onClick={make} disabled={busy || !cur}>{busy ? "Gerando…" : "Gerar imagem"}</button>
+        {url && <>
+          <a className="btn-soft btn" href={url} download={fileName}>Baixar</a>
+          <button className="btn-soft btn" onClick={share}>Compartilhar</button></>}
+        <span className="text-sm text-rose-300">{msg}</span>
+      </div>
+      {url && <img src={url} alt="Confrontos da rodada" className="max-w-full rounded-xl border border-line" style={{ maxHeight: 640 }} />}
+    </div>
+  );
+}
+
+/** Admin: gera rodadas — várias de uma vez, com horário das partidas e prazo máximo para lançar o placar. */
+function GeneratePanel({ sid }: { sid: number }) {
+  const { data: season } = useData<any>(`/seasons/${sid}/`);
+  const [f, setF] = useState({ count: "1", start: "", slot_minutes: "0", parallel: "0", round_gap_hours: "24", deadline_hours: "24" });
+  const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(false);
+  const set = (k: string, v: string) => setF({ ...f, [k]: v });
+  const go = async () => {
+    setBusy(true); setMsg("");
+    try {
+      const r = await api(`/seasons/${sid}/advance/`, { method: "POST", body: { count: Number(f.count) || 1, start: f.start ? new Date(f.start).toISOString() : undefined,
+        slot_minutes: Number(f.slot_minutes) || 0, parallel: Number(f.parallel) || 0, round_gap_hours: Number(f.round_gap_hours) || 0, deadline_hours: Number(f.deadline_hours) || 24 } });
+      setMsg(`${r.length} ${r.length === 1 ? "rodada gerada" : "rodadas geradas"}: ${r.map((x: any) => x.name).join(", ")}.`);
+    } catch (x: any) { setMsg(x.message); } finally { setBusy(false); }
+  };
+  const num = (k: keyof typeof f, label: string, hint?: string) => (
+    <label className="text-sm block"><span className="text-muted">{label}</span>
+      <input className="inp mt-1 !w-28" type="number" min={0} value={f[k]} onChange={(e) => set(k, e.target.value)} title={hint} /></label>);
+  return (
+    <div className="card space-y-3">
+      <SectionTitle icon={FlagTriangleRight}>Gerar rodadas</SectionTitle>
+      <div className="flex flex-wrap items-end gap-3">
+        {num("count", "Rodadas de uma vez", "Quantas rodadas gerar agora (liga/grupos)")}
+        <label className="text-sm block"><span className="text-muted">Horário do 1º jogo</span>
+          <input className="inp mt-1 !w-52" type="datetime-local" value={f.start} onChange={(e) => set("start", e.target.value)} /></label>
+        {num("parallel", "Jogos ao mesmo tempo", "0 = todos juntos")}
+        {num("slot_minutes", "Intervalo entre blocos (min)")}
+        {num("round_gap_hours", "Intervalo entre rodadas (h)")}
+        {num("deadline_hours", "Prazo p/ placar após o jogo (h)", "Depois disso só o admin libera mais tempo")}
+      </div>
+      <p className="text-xs text-muted">
+        {season?.config?.format === "groups" ? "Fase de grupos: os grupos são sorteados na 1ª geração (ou em Jogadores → Sortear grupos) e cada rodada traz um jogo de cada jogador do grupo. "
+          : "Rodadas geradas de uma vez usam a classificação atual e não repetem confrontos. "}
+        Sem horário, o prazo conta a partir de agora. Quando terminar a liga/grupos, o mesmo botão monta a próxima fase.
+      </p>
+      <div className="flex items-center gap-3">
+        <button className="btn-gold btn" onClick={go} disabled={busy}><FlagTriangleRight size={16} />{busy ? "Gerando…" : "Gerar"}</button>
+        <span className="text-sm text-teal">{msg}</span>
+      </div>
     </div>
   );
 }
@@ -564,8 +751,6 @@ export function Admin({ sid }: { sid: number }) {
   return (
     <div className="space-y-4">
       <div className="card flex flex-wrap items-center gap-3">
-        <button className="btn-gold btn" onClick={() => run(() => api(`/seasons/${sid}/advance/`, { method: "POST" }), "Rodada ou fase gerada.")}>
-          <FlagTriangleRight size={16} />Gerar próxima rodada ou fase</button>
         <label className="btn-soft cursor-pointer text-sm">
           <Upload size={16} />Importar jogadores (CSV)
           <input type="file" accept=".csv" className="hidden" onChange={(e) => { const f = new FormData(); f.append("file", e.target.files![0]);
@@ -577,7 +762,10 @@ export function Admin({ sid }: { sid: number }) {
         <span className="text-sm text-teal">{msg}</span>
       </div>
       <p className="text-xs text-muted -mt-2">Importe a planilha de inscrições (aba "ea-sports-fc-26") uma vez; os jogadores entram sozinhos fazendo check-in pelo telefone na tela inicial.</p>
+      <GeneratePanel sid={sid} />
+      <ImagesPanel sid={sid} />
       <DisputesPanel sid={sid} n={n} />
+      <MatchDeadlinesPanel sid={sid} n={n} />
       <RulesPanel sid={sid} />
       <DeadlinesPanel sid={sid} />
       <PlayersPanel sid={sid} />

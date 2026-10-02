@@ -78,7 +78,7 @@ function AdminLogin({ onDone }: { onDone: () => void }) {
   );
 }
 
-function Entry({ sid, onDone }: { sid?: number; onDone: () => void }) {
+function Entry({ sid, onDone }: { sid?: number; onDone: (sid?: number) => void }) {
   const [mode, setMode] = useState<"checkin" | "admin">("checkin");
   return (
     <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
@@ -94,7 +94,7 @@ function Entry({ sid, onDone }: { sid?: number; onDone: () => void }) {
           <h1 className="text-3xl">UniEVANGÉLICA</h1>
           <p className="text-muted text-sm mt-1">Faça seu check-in e entre no campeonato.</p>
         </div>
-        {mode === "checkin" ? <CheckIn sid={sid} onDone={(token) => { setToken(token); onDone(); }} /> : <AdminLogin onDone={onDone} />}
+        {mode === "checkin" ? <CheckIn sid={sid} onDone={(token, s) => { setToken(token); onDone(s); }} /> : <AdminLogin onDone={() => onDone()} />}
         <button className="w-full text-center text-xs text-muted hover:text-ice mt-4 inline-flex items-center justify-center gap-1"
           onClick={() => setMode((m) => (m === "checkin" ? "admin" : "checkin"))}>
           <KeyRound size={12} />{mode === "checkin" ? "Sou organizador" : "Voltar para o check-in"}
@@ -115,7 +115,7 @@ export default function App() {
     .catch(() => { setSeasons((cur) => cur ?? []); if (authed) { setToken(null); setAuthed(false); } });
   useEffect(() => { loadSeasons(); }, []);
   if (seasons === undefined) return null;
-  if (!authed) return <Entry sid={sid} onDone={() => { setAuthed(true); loadSeasons(); }} />;
+  if (!authed) return <Entry sid={sid} onDone={(s) => { setAuthed(true); if (s) setSid(s); loadSeasons(); }} />;
   return (
     <div className="max-w-6xl mx-auto p-4">
       <header className="flex flex-wrap items-center gap-3 border-b border-line pb-4 mb-6">

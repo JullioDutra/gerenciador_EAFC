@@ -18,6 +18,7 @@ class Season(models.Model):
     year = models.PositiveIntegerField()
     config = models.JSONField(default=dict, blank=True)  # sobrescreve DEFAULTS (ver services.py)
     champion = models.ForeignKey("Player", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    jogo = models.CharField(max_length=60, blank=True, help_text="Jogo/campeonato da planilha de inscrições que dá acesso a esta temporada (vazio = aceita qualquer inscrição)")
     def __str__(self): return f"{self.name} {self.year}"
 
 class Player(models.Model):
@@ -31,6 +32,7 @@ class Player(models.Model):
     avatar_file = models.ImageField(upload_to="avatars/", null=True, blank=True)  # tem prioridade sobre 'avatar' (URL) quando definido
     team = models.CharField(max_length=80, blank=True)  # clube/time escolhido (ex.: PSG, Flamengo) vindo da pré-inscrição
     campus = models.CharField(max_length=120, blank=True)  # região/campus, vindo do check-in
+    group = models.PositiveSmallIntegerField(null=True, blank=True)  # 1 = Grupo A, 2 = Grupo B... (só em temporadas com fase de grupos)
     number = models.PositiveIntegerField(null=True, blank=True); seed = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(max_length=12, choices=STATUS, default="active")
     class Meta: unique_together = [("season", "user")]
@@ -57,7 +59,8 @@ class Match(models.Model):
     winner = models.ForeignKey(Player, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     status = models.CharField(max_length=10, choices=STATUS, default="pending")
     extra_time = models.BooleanField(default=False, help_text="Foi à prorrogação")
-    deadline = models.DateTimeField(null=True, blank=True)
+    scheduled_at = models.DateTimeField(null=True, blank=True)  # horário marcado da partida
+    deadline = models.DateTimeField(null=True, blank=True)  # prazo máximo para lançar o placar; só o admin estende
     notes = models.TextField(blank=True); wo_reason = models.CharField(max_length=200, blank=True)
     reports = models.JSONField(default=dict, blank=True)  # {player_id: [sa, sb, pa, pb]}
     proof_a = models.FileField(upload_to="proofs/", null=True, blank=True)
