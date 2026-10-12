@@ -67,13 +67,6 @@ class Match(models.Model):
     proof_a = models.FileField(upload_to="proofs/", null=True, blank=True)
     proof_b = models.FileField(upload_to="proofs/", null=True, blank=True)
     class Meta: ordering = ["round__number", "slot"]
-    def __str__(self):
-        # Se houver um player_b, mostra "Player A vs Player B"
-        if self.player_b:
-            return f"{self.player_a} vs {self.player_b} (Rodada {self.round.number})"
-        
-        # Se player_b for nulo (bye)
-        return f"{self.player_a} avança direto (Rodada {self.round.number})"
 
 class Leg(models.Model):
     """Um jogo dentro de um confronto de ida-e-volta ou melhor-de-3/5 (round.match_format != 'single')."""
