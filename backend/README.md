@@ -12,8 +12,9 @@ POST /api/seasons/{id}/advance/ repetidamente (liga/grupos → [playoff] → mat
   `parallel` + `slot_minutes` (escalonar jogos), `round_gap_hours`, `deadline_hours` (prazo p/ lançar o placar).
 - **Placar**: só uma pessoa valida — `POST /matches/{id}/report/` já fecha a partida; o outro jogador pode `POST /matches/{id}/contest/`.
   Depois de `deadline`, jogadores não lançam mais; só o admin (`POST /matches/{id}/extend-deadline/ {"deadline": ISO}` ou `set-result`).
-- **Check-in**: `Season.jogo` liga a temporada à coluna "Jogo" da planilha. `POST /checkin/lookup/` lista as inscrições do telefone (uma por campeonato);
-  `POST /checkin/confirm/ {"phone", "registrations": [ids]}` faz o check-in nas escolhidas (vazio = todas).
+- **Check-in**: `Season.jogo` liga a temporada à coluna "Jogo" da planilha. `POST /checkin/lookup/` lista os campeonatos disponíveis para o telefone (abertos que aceitam a inscrição + os em que a pessoa já está,
+  inclusive os trazidos pelo admin); `POST /checkin/confirm/ {"phone", "seasons": [ids]}` faz o check-in nos escolhidos (vazio = todos). Nunca escolhe sozinho o mais novo.
+- **Trocar o formato**: `PATCH /seasons/{id}/ {"config": {"format": ...}}` só é aceito antes da 1ª rodada.
 - **Imagens**: `GET /rounds/{id}/image/` (admin; `?group=N`, `?match=ID`) devolve um PNG com os confrontos, horários e prazos.
 - **Encerrar check-in**: `PATCH /seasons/{id}/ {"checkin_open": false}`; quem já fez check-in continua entrando.
 - **Usar jogadores de outro campeonato**: `POST /seasons/{id}/import-from/ {"source", "filters": {"campus": "..."}, "top": N, "dry_run": true}`
