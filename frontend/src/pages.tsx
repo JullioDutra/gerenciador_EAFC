@@ -366,27 +366,25 @@ export function Profile({ sid }: { sid: number }) {
 }
 
 /** Check-in do jogador: só o telefone, sem formulário. Busca as pré-inscrições (uma por campeonato) e já loga. */
-/** Pode fazer check-in: há campeonato e o check-in está aberto (ou a pessoa já fez e só vai reentrar). */
-const canGo = (x: any) => x.season && (x.season.checkin_open || x.already_checked_in);
-export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string, sid?: number) => void }) {
+/** Check-in do jogador: só o telefone, sem formulário. Mostra os campeonatos disponíveis para esse número e a pessoa escolhe onde entrar. */
+export function CheckIn({ onDone }: { sid?: number; onDone: (token: string, sid?: number) => void }) {
   const [phone, setPhone] = useState(""); const [reg, setReg] = useState<any>(); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const [picked, setPicked] = useState<number[]>([]);
   const lookup = async () => {
     setBusy(true); setErr("");
     try {
       const r = await api("/checkin/lookup/", { method: "POST", body: { phone } }); setReg(r);
-      const ok = (r.registrations as any[]).filter(canGo); setPicked(ok.length === 1 ? [ok[0].id] : []);
+      setPicked(r.options.length === 1 ? [r.options[0].season.id] : []);
     } catch (x: any) { setErr(x.message); } finally { setBusy(false); }
   };
   const confirm = async (ids: number[]) => {
     if (ids.length === 0) { setErr("Escolha em qual campeonato fazer o check-in."); return; }
     setBusy(true); setErr("");
-    try { const r = await api("/checkin/confirm/", { method: "POST", body: { phone, season: sid, registrations: ids } }); onDone(r.token, r.seasons?.[0]); }
+    try { const r = await api("/checkin/confirm/", { method: "POST", body: { phone, seasons: ids } }); onDone(r.token, r.seasons?.[0]); }
     catch (x: any) { setErr(x.message); } finally { setBusy(false); }
   };
   if (reg) {
-    const regs: any[] = reg.registrations ?? []; const avail = regs.filter(canGo);
-    const multi = regs.length > 1;
+    const opts: any[] = reg.options ?? []; const multi = opts.length > 1;
     const toggle = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
     return (
       <div className="card space-y-3">
@@ -396,24 +394,23 @@ export function CheckIn({ sid, onDone }: { sid?: number; onDone: (token: string,
           <p className="text-sm text-muted">{reg.equipe && <>Time: <span className="text-ice">{reg.equipe}</span> · </>}{reg.campus}</p>
           {reg.curso && <p className="text-xs text-muted">{reg.curso}</p>}
         </div>
-        {multi && <p className="text-sm">Seu número está em <b>{regs.length} campeonatos</b>. Em qual deles você quer fazer o check-in?</p>}
+        {multi && <p className="text-sm">Há <b>{opts.length} campeonatos</b> para o seu número. Em qual você quer fazer o check-in?</p>}
         <div className="space-y-2">
-          {regs.map((x) => (
-            <label key={x.id} className={`flex items-center gap-3 rounded-xl border border-line p-3 text-sm ${canGo(x) ? "cursor-pointer hover:bg-panel2" : "opacity-50"}`}>
-              {multi && <input type="checkbox" disabled={!canGo(x)} checked={picked.includes(x.id)} onChange={() => toggle(x.id)} />}
-              <span className="flex-1"><b>{x.jogo || "Campeonato"}</b>{x.equipe && <span className="text-muted"> · {x.equipe}</span>}
-                <span className="block text-xs text-muted">{!x.season ? "Nenhum campeonato aberto para esta inscrição ainda." : !canGo(x) ? `${x.season.name} · check-in encerrado` : x.season.name}</span></span>
-              {x.already_checked_in && <span className="chip-gold"><CheckCircle2 size={12} />Já fez</span>}
+          {opts.map((o) => (
+            <label key={o.season.id} className="flex items-center gap-3 rounded-xl border border-line p-3 text-sm cursor-pointer hover:bg-panel2">
+              {multi && <input type="checkbox" checked={picked.includes(o.season.id)} onChange={() => toggle(o.season.id)} />}
+              <span className="flex-1"><b>{o.season.name}</b>{o.registration.jogo && <span className="text-muted"> · {o.registration.jogo}</span>}
+                {o.registration.equipe && <span className="text-muted"> · {o.registration.equipe}</span>}</span>
+              {o.joined && <span className="chip-gold"><CheckCircle2 size={12} />Você já está aqui</span>}
             </label>))}
         </div>
-        {!multi && regs[0]?.already_checked_in && <p className="text-xs text-gold flex items-center gap-1"><CheckCircle2 size={13} />Você já fez check-in antes — confirmar de novo só entra na sua conta.</p>}
         <Err e={err} />
         <div className="flex flex-wrap gap-2">
           <button className="btn-soft btn flex-1 justify-center" onClick={() => setReg(undefined)}>Não sou eu</button>
           {multi ? <>
             <button className="btn flex-1 justify-center" onClick={() => confirm(picked)} disabled={busy || picked.length === 0}>{busy ? "Entrando…" : `Check-in nos selecionados (${picked.length})`}</button>
-            {avail.length > 1 && <button className="btn-gold btn flex-1 justify-center" onClick={() => confirm(avail.map((x) => x.id))} disabled={busy}>Nos dois / todos</button>}
-          </> : <button className="btn flex-1 justify-center" onClick={() => confirm(avail.map((x) => x.id))} disabled={busy || avail.length === 0}>{busy ? "Entrando…" : "Confirmar check-in"}</button>}
+            <button className="btn-gold btn flex-1 justify-center" onClick={() => confirm(opts.map((o) => o.season.id))} disabled={busy}>Em todos</button>
+          </> : <button className="btn flex-1 justify-center" onClick={() => confirm([opts[0].season.id])} disabled={busy}>{busy ? "Entrando…" : opts[0]?.joined ? "Entrar" : "Confirmar check-in"}</button>}
         </div>
       </div>
     );
@@ -513,12 +510,17 @@ const TIEBREAK_OPTIONS: Record<string, string> = { pts: "Pontos", gd: "Saldo de 
 const PLAYER_STATUS: Record<string, string> = { active: "Ativo", playoff: "Playoff", main: "Fase principal",
   eliminated: "Eliminado", blocked: "Bloqueado", champion: "Campeão" };
 
+const RULE_DEFAULTS: Record<string, number> = { groups: 4, group_qualify: 2, swiss_rounds: 8, direct: 16, playoff_size: 48, playoff_qualify: 16,
+  round_days: 7, win: 3, draw: 1, loss: 0 };  // iguais aos DEFAULTS do backend (services.py)
+
 function RulesPanel({ sid }: { sid: number }) {
   const { data: season, reload } = useData<any>(`/seasons/${sid}/`);
+  const { data: rounds } = useData<any[]>(`/rounds/?season=${sid}`);
   const [msg, setMsg] = useState("");
   if (!season) return null;
   const cfg = season.config ?? {};
   const tb: string[] = cfg.tiebreakers ?? ["pts", "gd", "gf", "wins"];
+  const started = (rounds?.length ?? 0) > 0;  // depois da 1ª rodada o formato fica travado
   const save = async (patch: object) => {
     try { await api(`/seasons/${sid}/`, { method: "PATCH", body: { config: { ...cfg, ...patch } } }); setMsg("Regras salvas."); reload(); }
     catch (x: any) { setMsg(x.message); }
@@ -527,10 +529,19 @@ function RulesPanel({ sid }: { sid: number }) {
     [t[i], t[j]] = [t[j], t[i]]; save({ tiebreakers: t }); };
   const field = (key: string, label: string, w = "w-20") => (
     <label className="text-sm flex items-center gap-2">{label}
-      <input className={`inp ${w}`} defaultValue={cfg[key] ?? ""} onBlur={(e) => save({ [key]: Number(e.target.value) })} /></label>);
+      <input className={`inp ${w}`} defaultValue={cfg[key] ?? RULE_DEFAULTS[key] ?? ""} onBlur={(e) => save({ [key]: Number(e.target.value) })} /></label>);
   return (
     <div className="card space-y-3">
       <SectionTitle icon={Settings2}>Regras da temporada</SectionTitle>
+      <div className="flex flex-wrap items-center gap-4">
+        <label className="text-sm flex items-center gap-2">Formato da 1ª fase
+          <select className="inp !w-48 !py-1.5" disabled={started} value={cfg.format ?? "league"} onChange={(e) => save({ format: e.target.value })}>
+            <option value="league">Fase de liga</option><option value="groups">Fase de grupos</option><option value="knockout">Somente mata-mata</option></select></label>
+        {started && <span className="text-xs text-muted">Só dá para trocar antes da 1ª rodada.</span>}
+        <label className="text-sm flex items-center gap-2">Jogo da inscrição
+          <input className="inp !w-48 !py-1.5" defaultValue={season.jogo ?? ""} placeholder="vazio = aceita qualquer"
+            onBlur={(e) => e.target.value !== (season.jogo ?? "") && api(`/seasons/${sid}/`, { method: "PATCH", body: { jogo: e.target.value.trim() } }).then(() => { setMsg("Regras salvas."); reload(); }).catch((x) => setMsg(x.message))} /></label>
+      </div>
       <div className="flex flex-wrap gap-4">
         {cfg.format === "knockout" ? null : cfg.format === "groups"
           ? <>{field("groups", "Grupos")}{field("group_qualify", "Classificam por grupo")}</>

@@ -2,6 +2,7 @@ import csv, io
 from django.http import HttpResponse
 from rest_framework import permissions, serializers, viewsets
 from rest_framework.authtoken.models import Token
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from . import images, services as sv
@@ -54,6 +55,17 @@ def err(fn):
 
 class SeasonViewSet(viewsets.ModelViewSet):
     queryset = Season.objects.all(); serializer_class = SeasonS; permission_classes = [AdminOrReadOnly]
+    FORMATS = ("league", "groups", "knockout")
+    def _check_format(self, serializer):
+        cfg_new = serializer.validated_data.get("config")
+        if cfg_new is None: return
+        new = cfg_new.get("format", "league")
+        if new not in self.FORMATS: raise ValidationError({"detail": "Formato inválido (use league, groups ou knockout)."})
+        inst = serializer.instance
+        if inst is not None and new != (inst.config or {}).get("format", "league") and inst.rounds.exists():
+            raise ValidationError({"detail": "O campeonato já começou: o formato só pode mudar antes da 1ª rodada."})
+    def perform_create(self, serializer): self._check_format(serializer); serializer.save()
+    def perform_update(self, serializer): self._check_format(serializer); serializer.save()
     @action(detail=False, permission_classes=[permissions.IsAuthenticated])
     def mine(self, req):  # campeonatos em que o usuário logado joga (o 1º acesso entra direto no seu, ou escolhe se forem vários)
         return Response([{**SeasonS(p.season).data, "player": p.id} for p in Player.objects.filter(user=req.user).select_related("season").order_by("-season_id")])
@@ -202,29 +214,27 @@ def register(req):
 class RegistrationS(serializers.ModelSerializer):
     class Meta: model = Registration; fields = "__all__"
 
-def _reg_data(reg, season):
-    return {"id": reg.id, "jogo": reg.jogo, "equipe": reg.equipe, "campus": reg.campus, "curso": reg.curso,
-            "already_checked_in": reg.checked_in, "nick": reg.nick,
-            "season": {"id": season.id, "name": f"{season.name} {season.year}", "checkin_open": season.checkin_open} if season else None}
+def _option_data(reg, season, player):
+    return {"season": {"id": season.id, "name": f"{season.name} {season.year}", "jogo": season.jogo, "checkin_open": season.checkin_open},
+            "registration": {"id": reg.id, "jogo": reg.jogo, "equipe": reg.equipe, "nick": reg.nick},
+            "joined": player is not None}  # já está neste campeonato (check-in anterior ou trazido pelo admin)
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
-def checkin_lookup(req):  # {"phone": "..."} -> inscrições do telefone (uma por campeonato) para o jogador escolher onde fazer check-in
+def checkin_lookup(req):  # {"phone": "..."} -> campeonatos disponíveis para este telefone; a pessoa escolhe onde fazer check-in
     try:
         opts = sv.checkin_options(req.data.get("phone", ""))
     except ValueError as e:
         return Response({"detail": str(e)}, status=404)
     reg = opts[0][0]
-    return Response({"nome": reg.nome, "nick": reg.nick, "equipe": reg.equipe, "campus": reg.campus,
-                      "curso": reg.curso, "jogo": reg.jogo, "already_checked_in": reg.checked_in,
-                      "registrations": [_reg_data(r, s) for r, s in opts]})
+    return Response({"nome": reg.nome, "nick": reg.nick, "equipe": reg.equipe, "campus": reg.campus, "curso": reg.curso,
+                      "options": [_option_data(*o) for o in opts]})
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
-def checkin_confirm(req):  # {"phone", "registrations": [ids] (vazio = todas), "season": id (opcional, só de reserva)}
+def checkin_confirm(req):  # {"phone", "seasons": [ids] (vazio = todos os oferecidos)}
     try:
-        fallback = Season.objects.filter(pk=req.data.get("season")).first()
-        done = sv.checkin_confirm(req.data.get("phone", ""), fallback, req.data.get("registrations") or None)
+        done = sv.checkin_confirm(req.data.get("phone", ""), req.data.get("seasons") or None)
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
     player, reg = done[0]

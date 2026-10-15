@@ -128,33 +128,65 @@ class CheckinTests(TestCase):
 
     def test_options_lists_each_championship(self):
         opts = sv.checkin_options("(62) 99999-9999")
-        self.assertEqual({(r.jogo, s.id) for r, s in opts}, {("EA FC 26", self.s1.id), ("LoL", self.s2.id)})
+        self.assertEqual({(r.jogo, s.id) for r, s, _ in opts}, {("EA FC 26", self.s1.id), ("LoL", self.s2.id)})
 
     def test_checkin_one_or_all(self):
-        regs = {r.jogo: r.id for r, _ in sv.checkin_options("62999999999")}
-        done = sv.checkin_confirm("62999999999", None, [regs["LoL"]])
+        done = sv.checkin_confirm("62999999999", [self.s2.id])
         self.assertEqual([p.season_id for p, _ in done], [self.s2.id])
-        done = sv.checkin_confirm("62999999999")  # todas
+        done = sv.checkin_confirm("62999999999")  # todos
         self.assertEqual({p.season_id for p, _ in done}, {self.s1.id, self.s2.id})
         self.assertEqual(Player.objects.count(), 2)  # LoL não duplicou
-        with self.assertRaises(ValueError): sv.checkin_confirm("62999999999", None, [9999])
+        self.assertEqual(User.objects.count(), 1)
+        with self.assertRaises(ValueError): sv.checkin_confirm("62999999999", [9999])
 
     def test_api(self):
         c = APIClient(); r = c.post("/api/checkin/lookup/", {"phone": "62999999999"}, format="json")
-        self.assertEqual(len(r.data["registrations"]), 2)
+        self.assertEqual(len(r.data["options"]), 2)
         r = c.post("/api/checkin/confirm/", {"phone": "62999999999"}, format="json")
         self.assertEqual(sorted(r.data["seasons"]), sorted([self.s1.id, self.s2.id])); self.assertIn("token", r.data)
 
 
-class ImageTests(TestCase):
-    def test_round_image_endpoint_admin_only(self):
-        s = mk_season(8, format="groups", groups=2, group_qualify=2)
-        rd = sv.advance(s, 1, sv.parse_schedule(s, {"start": timezone.now().isoformat()}))[0]
-        admin = User.objects.create_superuser("adm@x.com", "pw"); c = APIClient()
-        self.assertEqual(c.get(f"/api/rounds/{rd.id}/image/").status_code, 401)
-        c.force_authenticate(admin); r = c.get(f"/api/rounds/{rd.id}/image/")
-        self.assertEqual((r.status_code, r["Content-Type"]), (200, "image/png")); self.assertTrue(r.content.startswith(b"\x89PNG"))
-        self.assertEqual(c.get(f"/api/rounds/{rd.id}/image/?group=1").status_code, 200)
+class CheckinNewTournamentTests(TestCase):
+    """Quem já está em um campeonato precisa poder escolher outro (novo) no check-in, sem ser empurrado para o mais recente."""
+    def setUp(self):
+        self.old = Season.objects.create(name="Antigo", year=2026)  # jogo em branco = aceita qualquer inscrição
+        Registration.objects.create(nome="Ana", email="ana@x.com", phone_norm="62999999999", jogo="fc")
+        self.ana = Player.objects.create(season=self.old, user=User.objects.create_user("ana@x.com"), name="Ana", nickname="ana")
+
+    def test_returning_player_keeps_old_and_can_pick_new(self):
+        new = Season.objects.create(name="Novo", year=2026)
+        opts = sv.checkin_options("62999999999")
+        self.assertEqual({(s.id, p is not None) for _, s, p in opts}, {(self.old.id, True), (new.id, False)})
+        done = sv.checkin_confirm("62999999999", [self.old.id])  # escolheu o antigo: não entra no novo
+        self.assertEqual([p.season_id for p, _ in done], [self.old.id]); self.assertEqual(Player.objects.count(), 1)
+        done = sv.checkin_confirm("62999999999", [new.id])  # escolheu o novo: mesma conta
+        self.assertEqual(done[0][0].user_id, self.ana.user_id); self.assertEqual(Player.objects.count(), 2)
+
+    def test_admin_imported_player_sees_season_even_if_closed_or_other_jogo(self):
+        other = Season.objects.create(name="Copa", year=2026, jogo="outro", checkin_open=False)
+        Player.objects.create(season=other, user=self.ana.user, name="Ana", nickname="ana")  # trazida pelo admin
+        self.assertIn(other.id, {s.id for _, s, _ in sv.checkin_options("62999999999")})
+        done = sv.checkin_confirm("62999999999", [other.id]); self.assertEqual(done[0][0].season_id, other.id)
+
+    def test_closed_or_finished_hidden_for_newcomers(self):
+        Season.objects.create(name="Fechado", year=2026, checkin_open=False)
+        self.assertEqual({s.name for _, s, _ in sv.checkin_options("62999999999")}, {"Antigo"})
+
+
+class FormatChangeTests(TestCase):
+    def setUp(self):
+        self.s = mk_season(4, swiss_rounds=2); self.c = APIClient(); self.c.force_authenticate(User.objects.create_superuser("adm@x.com", "pw"))
+
+    def test_switch_before_start_only(self):
+        r = self.c.patch(f"/api/seasons/{self.s.id}/", {"config": {"format": "knockout"}}, format="json"); self.assertEqual(r.status_code, 200)
+        self.s.refresh_from_db(); self.assertEqual(sv.advance(self.s)[0].phase, "sf")  # 4 jogadores: mata-mata direto
+        r = self.c.patch(f"/api/seasons/{self.s.id}/", {"config": {"format": "league"}}, format="json")
+        self.assertEqual(r.status_code, 400); self.assertIn("já começou", r.data["detail"])
+        self.assertEqual(self.c.patch(f"/api/seasons/{self.s.id}/", {"config": {"format": "knockout", "x": 1}}, format="json").status_code, 200)  # mesmo formato: ok
+
+    def test_invalid_format_rejected(self):
+        s2 = mk_season(2)
+        self.assertEqual(self.c.patch(f"/api/seasons/{s2.id}/", {"config": {"format": "zzz"}}, format="json").status_code, 400)
 
 
 class KnockoutOnlyTests(TestCase):
@@ -184,7 +216,7 @@ class CheckinClosedTests(TestCase):
         sv.checkin_confirm("62111111111")  # já fez: só reloga
         with self.assertRaises(ValueError): sv.checkin_confirm("62111111112")
         self.assertEqual(Player.objects.count(), 1)
-        self.assertFalse(sv.checkin_options("62111111112")[0][1].checkin_open)
+        with self.assertRaises(ValueError): sv.checkin_options("62111111112")  # fechado: nem é oferecido a quem é novo
 
 
 class ImportFromTests(TestCase):

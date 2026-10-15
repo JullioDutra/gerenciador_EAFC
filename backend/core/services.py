@@ -387,51 +387,56 @@ def import_registrations(fileobj, sheet_name="ea-sports-fc-26"):
     return n
 
 def checkin_options(phone):
-    """Todas as inscrições ligadas ao telefone — uma por campeonato (coluna 'Jogo' da planilha) — e a temporada de cada uma."""
+    """Campeonatos em que o telefone pode fazer check-in, para a pessoa escolher. Cada item: (inscrição, temporada, jogador|None).
+    Entram: temporadas abertas e não encerradas que aceitam a inscrição (mesmo 'jogo', ou 'jogo' em branco = aceita qualquer)
+    e temporadas em que a pessoa já foi colocada (check-in anterior ou trazida pelo admin), mesmo fechadas."""
     norm = normalize_phone(phone)
     if not norm: raise ValueError("Informe um telefone válido.")
     regs = Registration.objects.filter(phone_norm=norm).order_by("-created_raw", "-id")
     if not regs: raise ValueError("Não encontramos nenhuma inscrição com esse telefone.")
     latest = {}
     for r in regs: latest.setdefault((r.jogo or "").strip().lower(), r)  # inscrição repetida no mesmo campeonato: vale a mais recente
-    return [(r, season_for_registration(r)) for r in latest.values()]
-
-def season_for_registration(reg, fallback=None):
-    """Temporada do campeonato da inscrição: a que tem o mesmo 'jogo'; senão a mais recente sem jogo definido (aceita qualquer)."""
-    seasons = Season.objects.order_by("-id")
-    if reg.jogo:
-        s = seasons.filter(jogo__iexact=reg.jogo.strip()).first()
-        if s: return s
-    return seasons.filter(jogo="").first() or fallback
+    regs = list(latest.values())
+    users = set(User.objects.filter(email__in=[r.email for r in regs if r.email]).values_list("id", flat=True))
+    users |= {r.player.user_id for r in regs if r.player_id}
+    users |= set(User.objects.filter(email__in=[f"{norm}@checkin.fc26"]).values_list("id", flat=True))
+    joined = {p.season_id: p for p in Player.objects.filter(user_id__in=users).select_related("season")}
+    found = {}  # season_id -> (reg, season)
+    def put(reg, season, exact):
+        if season.id not in found or exact: found[season.id] = (reg, season)
+    for reg in regs:
+        jogo = (reg.jogo or "").strip().lower()
+        for s in Season.objects.all():
+            if s.id in joined or (s.checkin_open and not s.champion_id):
+                if (s.jogo or "").strip().lower() == jogo and jogo: put(reg, s, True)
+                elif not s.jogo: put(reg, s, False)
+    for sid, p in joined.items():
+        if sid not in found: found[sid] = (regs[0], p.season)
+    if not found: raise ValueError("Nenhum campeonato com check-in aberto para a sua inscrição.")
+    return [(reg, s, joined.get(s.id)) for s_id, (reg, s) in sorted(found.items(), reverse=True)]
 
 def checkin_lookup(phone):  # compatibilidade: primeira inscrição
     return checkin_options(phone)[0][0]
 
 @transaction.atomic
-def checkin_confirm(phone, season=None, registration_ids=None):
-    """Check-in numa ou em várias inscrições do mesmo telefone (registration_ids; vazio = todas).
-    Devolve (lista de jogadores criados/encontrados, inscrições)."""
+def checkin_confirm(phone, season_ids=None):
+    """Check-in em um ou mais campeonatos escolhidos (season_ids; vazio = todos os oferecidos). Devolve [(jogador, inscrição)]."""
     opts = checkin_options(phone)
-    if registration_ids:
-        wanted = {int(i) for i in registration_ids}
-        opts = [(r, s) for r, s in opts if r.id in wanted]
-        if not opts: raise ValueError("Selecione ao menos um campeonato para o check-in.")
-    done = []
+    if season_ids:
+        wanted = {int(i) for i in season_ids}
+        opts = [o for o in opts if o[1].id in wanted]
+        if not opts: raise ValueError("Escolha um campeonato disponível para o check-in.")
     first = opts[0][0]
-    email = first.email or f"{first.phone_norm}@checkin.fc26"
-    user, _ = User.objects.get_or_create(email=email)
-    for reg, s in opts:
-        s = s or season
-        if s is None: raise ValueError(f"Não há campeonato aberto para \"{reg.jogo or 'esta inscrição'}\".")
-        if reg.player_id and reg.player.season_id == s.id:
-            done.append((reg.player, reg)); continue  # já fez check-in neste campeonato: só reloga
-        if not s.checkin_open: raise ValueError(f"O check-in de \"{s.name}\" está encerrado.")
-        first_name = (reg.nome.split() or [reg.nome])[0]
-        player, created = Player.objects.get_or_create(season=s, user=user, defaults={
-            "name": reg.nome, "nickname": reg.nick or first_name, "team": reg.equipe,
-            "campus": reg.campus, "ea_id": reg.nick or "",
-        })
-        if not created:  # já existia (ex.: reimportação): mantém o que o jogador já tiver editado, só completa o que faltar
+    existing = next((p.user for _, _, p in opts if p), None)  # mantém a mesma conta de quem já joga em outro campeonato
+    user = existing or User.objects.get_or_create(email=first.email or f"{first.phone_norm}@checkin.fc26")[0]
+    done = []
+    for reg, s, player in opts:
+        if player is None:
+            if not s.checkin_open: raise ValueError(f"O check-in de \"{s.name}\" está encerrado.")
+            first_name = (reg.nome.split() or [reg.nome])[0]
+            player = Player.objects.create(season=s, user=user, name=reg.nome, nickname=reg.nick or first_name, team=reg.equipe,
+                                           campus=reg.campus, ea_id=reg.nick or "")
+        else:  # já estava no campeonato (check-in anterior ou trazido pelo admin): mantém o que já editou, só completa o que faltar
             changed = False
             for f, v in (("team", reg.equipe), ("campus", reg.campus)):
                 if not getattr(player, f) and v: setattr(player, f, v); changed = True
