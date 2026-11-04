@@ -685,7 +685,8 @@ function ImportPanel({ sid }: { sid: number }) {
   const [prev, setPrev] = useState<any>(); const [msg, setMsg] = useState("");
   const { data: values } = useData<Record<string, string[]>>(src ? `/seasons/${src}/filter-values/` : null);
   const others = seasons?.filter((s) => s.id !== sid) ?? [];
-  const body = (dry: boolean) => ({ source: Number(src), top: top ? Number(top) : undefined, dry_run: dry,
+  const [stage, setStage] = useState("initial");
+  const body = (dry: boolean) => ({ stage, source: Number(src), top: top ? Number(top) : undefined, dry_run: dry,
     filters: Object.fromEntries(filters.filter((f) => f.value.trim()).map((f) => [f.field, f.value.trim()])) });
   const run = async (dry: boolean) => {
     setMsg("");
@@ -697,6 +698,12 @@ function ImportPanel({ sid }: { sid: number }) {
   return (
     <div className="card space-y-3">
       <SectionTitle icon={Users}>Usar jogadores de outro campeonato</SectionTitle>
+      <label className="text-sm block">Entrada no campeonato
+        <select className="inp mt-1" value={stage} onChange={(e) => { setStage(e.target.value); setPrev(undefined); setMsg(""); }}>
+          <option value="initial">Início do campeonato</option>
+          <option value="knockout">Direto no mata-mata (após os playoffs)</option>
+        </select>
+      </label>
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-sm block"><span className="text-muted">Campeonato de origem</span>
           <select className="inp mt-1 !w-56" value={src} onChange={(e) => { setSrc(e.target.value); setPrev(undefined); }}>
@@ -724,7 +731,7 @@ function ImportPanel({ sid }: { sid: number }) {
           <p className="text-muted">{prev.matched} atendem ao filtro · {prev.new} novos · {prev.already} já estão neste campeonato</p>
           <p className="max-h-32 overflow-y-auto">{prev.players.map((p: any) => <span key={p.id} className={`inline-block mr-2 ${p.new ? "" : "text-muted line-through"}`}>{p.nickname}{p.campus && ` (${p.campus})`}</span>)}</p>
         </div>)}
-      <p className="text-xs text-muted">Vários filtros se combinam (todos precisam bater). Os dados do jogador (nome, nick, time, campus…) são copiados; resultados e pontos não. Só funciona antes da 1ª rodada.</p>
+      <p className="text-xs text-muted">Vários filtros se combinam (todos precisam bater). Os dados do jogador (nome, nick, time, campus…) são copiados; resultados e pontos não. A entrada inicial funciona antes da 1ª rodada. A entrada direta no mata-mata funciona após concluir os playoffs e antes de gerar a chave; os novos jogadores se juntam aos classificados locais. O total deve fechar 2, 4, 8, 16 ou 32 vagas.</p>
     </div>
   );
 }

@@ -27,7 +27,7 @@ def notify(player, kind, text):
 
 def standings(season):
     c = cfg(season)
-    rows = {p.id: dict(player=p, j=0, v=0, e=0, d=0, gp=0, gc=0, pts=0, opps=[]) for p in season.players.all()}
+    rows = {p.id: dict(player=p, j=0, v=0, e=0, d=0, gp=0, gc=0, pts=0, opps=[]) for p in season.players.filter(knockout_entry=False)}
     for m in Match.objects.filter(round__season=season, round__phase__in=LEAGUE_PHASES, status__in=Match.DONE):
         pairs = [(m.player_a_id, m.player_b_id, m.score_a, m.score_b)]
         if m.player_b_id: pairs.append((m.player_b_id, m.player_a_id, m.score_b, m.score_a))
@@ -159,6 +159,7 @@ def _check_groups_setup(season):
 def generate_league_rounds(season, count=1, sched=None):
     """Gera `count` rodadas de uma vez (fase de liga/Swiss ou fase de grupos), todas com horário e prazo.
     Em lote, as rodadas seguintes usam a classificação atual e nunca repetem confronto já gerado."""
+    season = Season.objects.select_for_update().get(pk=season.pk)
     c = cfg(season); sched = sched or parse_schedule(season, {}); count = max(int(count or 1), 1)
     if _open(season): raise ValueError("Há partidas pendentes na rodada atual.")
     made = []
@@ -321,18 +322,27 @@ def select_players(source, filters=None, top=None):
     return players
 
 @transaction.atomic
-def import_players_from(season, source, filters=None, top=None, dry_run=True):
+def import_players_from(season, source, filters=None, top=None, dry_run=True, stage="initial"):
     """Traz para `season` os jogadores de outro campeonato que passam no filtro (mesmo usuário, dados copiados).
     Quem já está no campeonato é ignorado. dry_run mostra só a prévia."""
     if source.id == season.id: raise ValueError("Escolha outro campeonato como origem.")
-    if not dry_run and season.rounds.exists(): raise ValueError("O campeonato já começou; não dá para trazer jogadores agora.")
+    season = Season.objects.select_for_update().get(pk=season.pk)
+    if stage not in ("initial", "knockout"): raise ValueError("Destino da importação inválido.")
+    if stage == "knockout":
+        last = season.rounds.last()
+        if is_groups(season) or is_knockout(season) or not last or last.phase != "playoff2" or _open(season):
+            raise ValueError("Importe para o mata-mata após concluir os playoffs e antes de gerar a chave.")
+    elif season.rounds.exists():
+        raise ValueError("O campeonato já começou; escolha a entrada direta no mata-mata após os playoffs.")
     chosen = select_players(source, filters, top)
     have = set(season.players.values_list("user_id", flat=True))
     out = []
     for p in chosen:
         new = p.user_id not in have
         if new and not dry_run:
-            Player.objects.create(season=season, user=p.user, **{f: getattr(p, f) for f in IMPORT_COPY})
+            Player.objects.create(season=season, user=p.user, knockout_entry=stage == "knockout",
+                                  status="main" if stage == "knockout" else "active",
+                                  **{f: getattr(p, f) for f in IMPORT_COPY})
         out.append({"id": p.id, "nickname": p.nickname, "team": p.team, "campus": p.campus, "new": new})
     n_new = sum(x["new"] for x in out)
     return {"matched": len(out), "new": n_new, "already": len(out) - n_new, "players": out, "dry_run": dry_run}
@@ -557,6 +567,7 @@ def _first_knockout_all(season):
 @transaction.atomic
 def advance(season, count=1, sched=None):
     """Avança para a próxima fase/rodada quando tudo está confirmado. Sempre devolve uma lista de rodadas criadas."""
+    season = Season.objects.select_for_update().get(pk=season.pk)
     c = cfg(season); sched = sched or parse_schedule(season, {})
     if _open(season): raise ValueError("Existem partidas sem resultado confirmado.")
     last = season.rounds.last()
@@ -583,6 +594,15 @@ def advance(season, count=1, sched=None):
         pool = _playoff_split(rank, c)[0]
         q = sorted(_winners(season, "playoff2"), key=rank.index); _flag(q, "main")
         _flag([p for p in pool if p not in q], "eliminated"); top = rank[:d]
+        external = list(season.players.filter(knockout_entry=True).exclude(status="blocked").order_by("id"))
+        if external:
+            qualified = top + q + external
+            if len(qualified) not in KO_BY_SIZE:
+                raise ValueError(f"{len(qualified)} classificados no total. Complete 2, 4, 8, 16 ou 32 jogadores antes de gerar o mata-mata.")
+            order = _bracket_order(len(qualified))
+            pairs = [(qualified[order[i] - 1], qualified[order[i + 1] - 1]) for i in range(0, len(order), 2)]
+            phase = KO_BY_SIZE[len(qualified)]
+            return [_new_round(season, phase, PHASE_LABEL[phase], pairs, sched)]
         return [_new_round(season, "r32", "32-avos", [(top[i], q[-1 - i]) for i in range(len(top))], sched)]
     if last.phase == "final":
         champ = last.matches.first().winner; season.champion = champ; season.save()

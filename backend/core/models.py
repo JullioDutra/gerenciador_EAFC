@@ -35,6 +35,7 @@ class Player(models.Model):
     campus = models.CharField(max_length=120, blank=True)  # região/campus, vindo do check-in
     group = models.PositiveSmallIntegerField(null=True, blank=True)  # 1 = Grupo A, 2 = Grupo B... (só em temporadas com fase de grupos)
     number = models.PositiveIntegerField(null=True, blank=True); seed = models.PositiveIntegerField(null=True, blank=True)
+    knockout_entry = models.BooleanField(default=False)  # classificado externo, sem participação na liga
     status = models.CharField(max_length=12, choices=STATUS, default="active")
     class Meta: unique_together = [("season", "user")]
     def __str__(self): return self.nickname
