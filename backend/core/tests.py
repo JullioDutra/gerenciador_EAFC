@@ -244,3 +244,58 @@ class ImportFromTests(TestCase):
         r = c.post(f"/api/seasons/{self.dst.id}/import-from/", {"source": self.src.id, "filters": {"campus": "goi"}, "dry_run": False}, format="json")
         self.assertEqual((r.status_code, r.data["new"]), (200, 1))
         self.assertIn("Anápolis", c.get(f"/api/seasons/{self.src.id}/filter-values/").data["campus"])
+
+
+class RegionalKnockoutImportTests(TestCase):
+    def setUp(self):
+        from .models import Round
+        self.season = mk_season(6, direct=2, playoff_size=4, playoff_qualify=2)
+        players = list(self.season.players.order_by('id'))
+        self.round = Round.objects.create(season=self.season, phase='playoff2', number=3, name='Playoff')
+        for slot, (a, b) in enumerate(((players[2], players[4]), (players[3], players[5]))):
+            Match.objects.create(round=self.round, slot=slot, player_a=a, player_b=b,
+                                 winner=a, score_a=2, score_b=0, status='confirmed')
+        self.source = mk_season(4)
+
+    def test_import_and_complete_knockout_preserves_league_and_progresses(self):
+        before = [r['player'].id for r in sv.standings(self.season)]
+        preview = sv.import_players_from(self.season, self.source, stage='knockout')
+        self.assertEqual(preview['new'], 4)
+        self.assertEqual(self.season.players.count(), 6)
+        result = sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')
+        self.assertEqual(result['new'], 4)
+        self.assertEqual([r['player'].id for r in sv.standings(self.season)], before)
+        self.assertEqual(sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')['new'], 0)
+        rnd = sv.advance(self.season)[0]
+        self.assertEqual(rnd.phase, 'qf')
+        ids = {pid for m in rnd.matches.all() for pid in (m.player_a_id, m.player_b_id)}
+        self.assertEqual(len(ids), 8)
+        self.assertTrue(set(self.season.players.filter(knockout_entry=True).values_list('id', flat=True)) <= ids)
+        self.assertEqual(self.round.matches.count(), 2)
+        with self.assertRaises(ValueError):
+            sv.import_players_from(self.season, self.source, stage='knockout')
+        play_all(self.season)
+        self.assertEqual(sv.stats(self.season)['total_matches'], 6)
+        self.assertEqual(sv.advance(self.season)[0].phase, 'sf')
+
+    def test_incomplete_bracket_rolls_back(self):
+        sv.import_players_from(self.season, self.source, top=1, dry_run=False, stage='knockout')
+        with self.assertRaisesMessage(ValueError, '5 classificados'):
+            sv.advance(self.season)
+        self.assertEqual(self.season.rounds.count(), 1)
+
+    def test_pending_playoff_and_initial_import_are_rejected(self):
+        with self.assertRaises(ValueError):
+            sv.import_players_from(self.season, self.source)
+        self.round.matches.update(status='pending', winner=None)
+        with self.assertRaises(ValueError):
+            sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')
+
+    def test_admin_api_and_permissions(self):
+        c = APIClient()
+        payload = {'source': self.source.id, 'stage': 'knockout', 'dry_run': False}
+        self.assertIn(c.post(f'/api/seasons/{self.season.id}/import-from/', payload).status_code, (401, 403))
+        c.force_authenticate(User.objects.create_superuser('admin@regional.test', 'test-only'))
+        response = c.post(f'/api/seasons/{self.season.id}/import-from/', payload, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['new'], 4)
