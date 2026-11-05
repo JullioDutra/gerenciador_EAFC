@@ -291,7 +291,7 @@ def _conceded(ms, pid):
     return sum((m.score_b if m.player_a_id == pid else m.score_a) or 0 for m in ms if pid in (m.player_a_id, m.player_b_id))
 def PlayerRef(p): return {"id": p.id, "nickname": p.nickname, "name": p.name}
 
-IMPORT_PLAYER_FIELDS = ("campus", "team", "platform", "country", "status")  # filtros sobre o jogador
+IMPORT_PLAYER_FIELDS = ("name", "nickname", "campus", "team", "platform", "country", "status")  # filtros sobre o jogador
 IMPORT_REG_FIELDS = ("curso", "perfil", "vinculo", "jogo")  # filtros sobre a inscrição (planilha) ligada ao jogador
 IMPORT_COPY = ("name", "nickname", "ea_id", "platform", "country", "avatar", "team", "campus")
 
@@ -322,7 +322,7 @@ def select_players(source, filters=None, top=None):
     return players
 
 @transaction.atomic
-def import_players_from(season, source, filters=None, top=None, dry_run=True, stage="initial"):
+def import_players_from(season, source, filters=None, top=None, dry_run=True, stage="initial", player_ids=None):
     """Traz para `season` os jogadores de outro campeonato que passam no filtro (mesmo usuário, dados copiados).
     Quem já está no campeonato é ignorado. dry_run mostra só a prévia."""
     if source.id == season.id: raise ValueError("Escolha outro campeonato como origem.")
@@ -335,6 +335,13 @@ def import_players_from(season, source, filters=None, top=None, dry_run=True, st
     elif season.rounds.exists():
         raise ValueError("O campeonato já começou; escolha a entrada direta no mata-mata após os playoffs.")
     chosen = select_players(source, filters, top)
+    if player_ids is not None:
+        if not isinstance(player_ids, list) or any(type(pid) is not int or pid <= 0 for pid in player_ids):
+            raise ValueError("Seleção inválida de jogadores.")
+        selected = set(player_ids)
+        if not selected <= set(source.players.values_list("id", flat=True)):
+            raise ValueError("Selecione apenas jogadores do campeonato de origem.")
+        chosen = [p for p in chosen if p.id in selected]
     have = set(season.players.values_list("user_id", flat=True))
     out = []
     for p in chosen:
@@ -343,7 +350,7 @@ def import_players_from(season, source, filters=None, top=None, dry_run=True, st
             Player.objects.create(season=season, user=p.user, knockout_entry=stage == "knockout",
                                   status="main" if stage == "knockout" else "active",
                                   **{f: getattr(p, f) for f in IMPORT_COPY})
-        out.append({"id": p.id, "nickname": p.nickname, "team": p.team, "campus": p.campus, "new": new})
+        out.append({"id": p.id, "name": p.name, "nickname": p.nickname, "team": p.team, "campus": p.campus, "new": new})
     n_new = sum(x["new"] for x in out)
     return {"matched": len(out), "new": n_new, "already": len(out) - n_new, "players": out, "dry_run": dry_run}
 

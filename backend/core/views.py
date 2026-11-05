@@ -94,7 +94,7 @@ class SeasonViewSet(viewsets.ModelViewSet):
         def run():
             src = Season.objects.filter(pk=d.get("source")).first()
             if not src: raise ValueError("Escolha o campeonato de origem.")
-            return sv.import_players_from(s, src, d.get("filters"), sv._num(d.get("top"), None, "Top", 1), d.get("dry_run", True) is not False, d.get("stage", "initial"))
+            return sv.import_players_from(s, src, d.get("filters"), sv._num(d.get("top"), None, "Top", 1), d.get("dry_run", True) is not False, d.get("stage", "initial"), d.get("player_ids"))
         return err(run)
     @action(detail=True, methods=["post"], url_path="import-csv", permission_classes=[permissions.IsAdminUser])
     def import_csv(self, req, pk=None):  # colunas: email,name,nickname,ea_id,platform,country
