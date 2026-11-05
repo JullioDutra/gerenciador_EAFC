@@ -256,7 +256,9 @@ def me(req, season_id):
     p = Player.objects.filter(season_id=season_id, user=req.user).select_related("season").first()
     if p is None: return Response({"detail": "Você não participa deste campeonato."}, status=404)
     s = p.season
-    row = next(r for r in sv.standings(s) if r["player"].id == p.id)
+    row = next((r for r in sv.standings(s) if r["player"].id == p.id), None)
+    if row is None:  # entrou direto no mata-mata (vindo de outro campeonato): não tem linha na classificação da liga
+        row = dict(group=None, pos=None, zone="direct", pts=0, v=0, e=0, d=0, gp=0, gc=0, sg=0)
     mine = (Match.objects.filter(round__season=s, player_a=p) | Match.objects.filter(round__season=s, player_b=p)).distinct()
     done = mine.filter(status__in=Match.DONE)
     nxt = mine.exclude(status__in=Match.DONE).first(); last = done.last()

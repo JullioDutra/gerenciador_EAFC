@@ -286,12 +286,13 @@ export function Dashboard({ sid }: { sid: number }) {
         <div>
           <h2 className="text-2xl font-bold">{me.format === "knockout"
             ? (me.player.status === "champion" ? "Você é o campeão!" : me.player.status === "eliminated" ? "Você foi eliminado" : "Você está no mata-mata")
+            : me.position == null ? (me.player.status === "champion" ? "Você é o campeão!" : me.player.status === "eliminated" ? "Você foi eliminado" : "Você entrou direto no mata-mata")
             : <>Você está em {me.position}º lugar{me.group ? ` no ${groupName(me.group)}` : ""}</>}</h2>
           {(me.player.team || me.player.campus) && <p className="text-sm text-muted">{me.player.team}{me.player.team && me.player.campus && " · "}{me.player.campus}</p>}
         </div>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {me.format !== "knockout" && stat("Pontos", me.points)}{stat("V-E-D", me.record.join("-"))}{stat("Gols marcados", me.gf)}{stat("Saldo", me.gd)}</div>
+        {me.format !== "knockout" && me.position != null && stat("Pontos", me.points)}{stat("V-E-D", me.record.join("-"))}{stat("Gols marcados", me.gf)}{stat("Saldo", me.gd)}</div>
       <div className="card space-y-2">
         <SectionTitle icon={Swords}>Próxima partida</SectionTitle>
         {nm ? <>
@@ -688,6 +689,7 @@ function ImportPanel({ sid }: { sid: number }) {
   const [stage, setStage] = useState("initial");
   const [selected, setSelected] = useState<Record<number, any>>({});
   const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState("");  // busca rápida por nome ou apelido
   const selectedCount = Object.keys(selected).length;
   const toggle = (p: any) => setSelected((old) => {
     const next = { ...old };
@@ -696,7 +698,7 @@ function ImportPanel({ sid }: { sid: number }) {
   });
   const body = (dry: boolean) => dry
     ? { stage, source: Number(src), dry_run: true, top: top ? Number(top) : undefined,
-        filters: Object.fromEntries(filters.filter((f) => f.value.trim()).map((f) => [f.field, f.value.trim()])) }
+        filters: { ...Object.fromEntries(filters.filter((f) => f.value.trim()).map((f) => [f.field, f.value.trim()])), ...(q.trim() ? { q: q.trim() } : {}) } }
     : { stage, source: Number(src), dry_run: false, player_ids: Object.keys(selected).map(Number) };
   const run = async (dry: boolean) => {
     setMsg(""); setBusy(true);
@@ -727,6 +729,9 @@ function ImportPanel({ sid }: { sid: number }) {
         <label className="text-sm block"><span className="text-muted">Só os N primeiros da classificação</span>
           <input className="inp mt-1 !w-24" type="number" min={1} value={top} onChange={(e) => { setTop(e.target.value); setPrev(undefined); }} placeholder="todos" /></label>
       </div>
+      <label className="text-sm block"><span className="text-muted">Buscar por nome ou apelido</span>
+        <input className="inp mt-1" value={q} placeholder="digite e aperte Enter" disabled={!src}
+          onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && src && run(true)} /></label>
       {filters.map((f, i) => (
         <div key={i} className="flex flex-wrap items-center gap-2 text-sm">
           <select className="inp !w-44 !py-1.5" value={f.field} onChange={(e) => setF(i, { field: e.target.value, value: "" })}>
@@ -739,12 +744,20 @@ function ImportPanel({ sid }: { sid: number }) {
       <div className="flex flex-wrap items-center gap-2">
         <button className="btn-soft btn" onClick={() => setFilters([...filters, { field: "name", value: "" }])}>+ Filtro</button>
         <button className="btn-soft btn" disabled={!src} onClick={() => run(true)}>Buscar jogadores</button>
-        <button className="btn" disabled={!src || selectedCount === 0} onClick={() => run(false)}>Trazer {selectedCount} selecionado(s)</button>
+        <button className="btn" disabled={!src || selectedCount === 0 || !!prev?.blocked} onClick={() => run(false)}>Trazer {selectedCount} selecionado(s)</button>
         <span className="text-sm text-teal">{msg}</span>
       </div>
       {prev?.dry_run && (
         <div className="text-sm">
           <p className="text-muted">{prev.matched} atendem ao filtro · {prev.new} novos · {prev.already} já estão neste campeonato</p>
+          {prev.ko_base != null && (() => { const total = prev.ko_base + selectedCount; const ok = [2, 4, 8, 16, 32].includes(total);
+            return <p className={ok ? "text-teal" : "text-gold"}>Mata-mata: {prev.ko_base} já classificados + {selectedCount} selecionado(s) = <b>{total}</b>
+              {ok ? " — fecha a chave." : " — precisa fechar 2, 4, 8, 16 ou 32 para gerar a chave."}</p>; })()}
+          {prev.blocked && <p className="text-gold">{prev.blocked} Você já pode ir marcando; o botão Trazer libera quando chegar a hora.</p>}
+          {prev.new > 0 && <div className="flex gap-2 my-2">
+            <button className="btn-soft btn !py-1" onClick={() => setSelected((old) => { const n = { ...old }; prev.players.filter((p: any) => p.new).forEach((p: any) => (n[p.id] = p)); return n; })}>Marcar todos desta busca</button>
+            <button className="btn-soft btn !py-1" onClick={() => setSelected((old) => { const n = { ...old }; prev.players.forEach((p: any) => delete n[p.id]); return n; })}>Desmarcar desta busca</button>
+          </div>}
           <div className="max-h-64 overflow-y-auto space-y-2">{prev.players.map((p: any) => (
             <label key={p.id} className={`flex items-center gap-2 ${p.new ? "" : "text-muted"}`}>
               <input type="checkbox" disabled={!p.new} checked={!!selected[p.id]} onChange={() => toggle(p)} />

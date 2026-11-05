@@ -260,7 +260,7 @@ class RegionalKnockoutImportTests(TestCase):
     def test_import_and_complete_knockout_preserves_league_and_progresses(self):
         before = [r['player'].id for r in sv.standings(self.season)]
         preview = sv.import_players_from(self.season, self.source, stage='knockout')
-        self.assertEqual(preview['new'], 4)
+        self.assertEqual(preview['new'], 4); self.assertEqual(preview['ko_base'], 4)  # 2 diretos + 2 vencedores do playoff
         self.assertEqual(self.season.players.count(), 6)
         result = sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')
         self.assertEqual(result['new'], 4)
@@ -272,8 +272,9 @@ class RegionalKnockoutImportTests(TestCase):
         self.assertEqual(len(ids), 8)
         self.assertTrue(set(self.season.players.filter(knockout_entry=True).values_list('id', flat=True)) <= ids)
         self.assertEqual(self.round.matches.count(), 2)
+        self.assertTrue(sv.import_players_from(self.season, self.source, stage='knockout')['blocked'])  # busca ainda funciona
         with self.assertRaises(ValueError):
-            sv.import_players_from(self.season, self.source, stage='knockout')
+            sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')
         play_all(self.season)
         self.assertEqual(sv.stats(self.season)['total_matches'], 6)
         self.assertEqual(sv.advance(self.season)[0].phase, 'sf')
@@ -286,7 +287,8 @@ class RegionalKnockoutImportTests(TestCase):
 
     def test_pending_playoff_and_initial_import_are_rejected(self):
         with self.assertRaises(ValueError):
-            sv.import_players_from(self.season, self.source)
+            sv.import_players_from(self.season, self.source, dry_run=False)
+        self.assertIsNotNone(sv.import_players_from(self.season, self.source)['blocked'])
         self.round.matches.update(status='pending', winner=None)
         with self.assertRaises(ValueError):
             sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')
@@ -299,6 +301,28 @@ class RegionalKnockoutImportTests(TestCase):
         response = c.post(f'/api/seasons/{self.season.id}/import-from/', payload, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['new'], 4)
+
+
+    def test_search_by_name_before_playoffs_and_seeding(self):
+        self.round.matches.update(status='pending', winner=None)
+        r = sv.import_players_from(self.season, self.source, {'q': self.source.players.first().nickname}, stage='knockout')
+        self.assertEqual(r['matched'], 1); self.assertIn('playoffs', r['blocked'])  # dá para buscar e ir selecionando antes
+        self.round.matches.update(status='confirmed')
+        for m in self.round.matches.all(): m.winner = m.player_a; m.save()
+        sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')
+        rnd = sv.advance(self.season)[0]
+        top = [r['player'] for r in sv.standings(self.season)][:2]
+        externals = set(self.season.players.filter(knockout_entry=True))
+        for m in rnd.matches.all():  # externos (cabeças 3-6) entram junto dos diretos: nenhum enfrenta o 1º/2º colocado da liga
+            pair = {m.player_a, m.player_b}
+            if pair & set(top): self.assertFalse(pair & externals, pair)
+
+    def test_me_for_knockout_entry(self):
+        sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')
+        p = self.season.players.filter(knockout_entry=True).first()
+        c = APIClient(); c.force_authenticate(p.user)
+        r = c.get(f'/api/seasons/{self.season.id}/me/')
+        self.assertEqual(r.status_code, 200); self.assertIsNone(r.data['position'])
 
 
 class SelectedPlayerImportTests(TestCase):

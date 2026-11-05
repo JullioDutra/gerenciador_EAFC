@@ -306,7 +306,7 @@ def select_players(source, filters=None, top=None):
     """Jogadores de `source` que atendem TODOS os filtros (texto contido, sem maiúsc./minúsc.; status é exato)
     e, se `top`, que terminaram entre os N primeiros da classificação (posição no grupo, em fase de grupos)."""
     filters = {k: str(v).strip().lower() for k, v in (filters or {}).items() if str(v).strip()}
-    bad = set(filters) - set(IMPORT_PLAYER_FIELDS) - set(IMPORT_REG_FIELDS)
+    bad = set(filters) - set(IMPORT_PLAYER_FIELDS) - set(IMPORT_REG_FIELDS) - {"q"}
     if bad: raise ValueError(f"Filtro desconhecido: {', '.join(sorted(bad))}.")
     players = list(source.players.select_related("user"))
     if top:
@@ -316,7 +316,8 @@ def select_players(source, filters=None, top=None):
     if any(k in IMPORT_REG_FIELDS for k in filters):
         for r in Registration.objects.filter(player__season=source): regs.setdefault(r.player_id, []).append(r)
     for k, v in filters.items():
-        if k == "status": players = [p for p in players if p.status == v]
+        if k == "q": players = [p for p in players if v in (p.name or "").lower() or v in (p.nickname or "").lower()]  # busca por nome OU apelido
+        elif k == "status": players = [p for p in players if p.status == v]
         elif k in IMPORT_PLAYER_FIELDS: players = [p for p in players if v in (getattr(p, k) or "").lower()]
         else: players = [p for p in players if any(v in (getattr(r, k) or "").lower() for r in regs.get(p.id, []))]
     return players
@@ -328,12 +329,14 @@ def import_players_from(season, source, filters=None, top=None, dry_run=True, st
     if source.id == season.id: raise ValueError("Escolha outro campeonato como origem.")
     season = Season.objects.select_for_update().get(pk=season.pk)
     if stage not in ("initial", "knockout"): raise ValueError("Destino da importação inválido.")
+    blocked = None  # por que ainda não dá para trazer; a busca (dry_run) funciona sempre, para o admin ir selecionando antes
     if stage == "knockout":
         last = season.rounds.last()
-        if is_groups(season) or is_knockout(season) or not last or last.phase != "playoff2" or _open(season):
-            raise ValueError("Importe para o mata-mata após concluir os playoffs e antes de gerar a chave.")
+        if is_groups(season) or is_knockout(season): blocked = "A entrada direta no mata-mata vale só para campeonatos em fase de liga com playoff."
+        elif not last or last.phase != "playoff2" or _open(season): blocked = "Importe para o mata-mata após concluir os playoffs e antes de gerar a chave."
     elif season.rounds.exists():
-        raise ValueError("O campeonato já começou; escolha a entrada direta no mata-mata após os playoffs.")
+        blocked = "O campeonato já começou; escolha a entrada direta no mata-mata após os playoffs."
+    if blocked and not dry_run: raise ValueError(blocked)
     chosen = select_players(source, filters, top)
     if player_ids is not None:
         if not isinstance(player_ids, list) or any(type(pid) is not int or pid <= 0 for pid in player_ids):
@@ -352,7 +355,12 @@ def import_players_from(season, source, filters=None, top=None, dry_run=True, st
                                   **{f: getattr(p, f) for f in IMPORT_COPY})
         out.append({"id": p.id, "name": p.name, "nickname": p.nickname, "team": p.team, "campus": p.campus, "new": new})
     n_new = sum(x["new"] for x in out)
-    return {"matched": len(out), "new": n_new, "already": len(out) - n_new, "players": out, "dry_run": dry_run}
+    ko_base = None  # quantos já estão garantidos no mata-mata (diretos + vencedores do playoff + externos já trazidos)
+    if stage == "knockout" and not blocked:
+        ko_base = min(cfg(season)["direct"], len(standings(season))) + season.rounds.last().matches.count() \
+            + season.players.filter(knockout_entry=True).exclude(status="blocked").count()
+    return {"matched": len(out), "new": n_new, "already": len(out) - n_new, "players": out, "dry_run": dry_run, "blocked": blocked,
+            "ko_base": ko_base}
 
 PROFILE_FIELDS = ("name", "nickname", "ea_id", "platform", "country", "avatar")
 
@@ -603,7 +611,7 @@ def advance(season, count=1, sched=None):
         _flag([p for p in pool if p not in q], "eliminated"); top = rank[:d]
         external = list(season.players.filter(knockout_entry=True).exclude(status="blocked").order_by("id"))
         if external:
-            qualified = top + q + external
+            qualified = top + external + q  # externos entram junto dos classificados diretos; os vencedores do playoff são os últimos cabeças
             if len(qualified) not in KO_BY_SIZE:
                 raise ValueError(f"{len(qualified)} classificados no total. Complete 2, 4, 8, 16 ou 32 jogadores antes de gerar o mata-mata.")
             order = _bracket_order(len(qualified))
