@@ -675,7 +675,7 @@ function CheckinPanel({ sid }: { sid: number }) {
   );
 }
 
-const IMPORT_FIELDS: [string, string][] = [["campus", "Campus"], ["team", "Time"], ["status", "Status"], ["platform", "Plataforma"],
+const IMPORT_FIELDS: [string, string][] = [["name", "Nome"], ["nickname", "Apelido"], ["campus", "Campus"], ["team", "Time"], ["status", "Status"], ["platform", "Plataforma"],
   ["country", "País"], ["curso", "Curso"], ["perfil", "Perfil"], ["vinculo", "Vínculo"], ["jogo", "Jogo da inscrição"]];
 
 /** Admin: traz para este campeonato jogadores de outro que já existe, filtrando por campo (campus, curso, time…) e/ou top N. */
@@ -686,27 +686,43 @@ function ImportPanel({ sid }: { sid: number }) {
   const { data: values } = useData<Record<string, string[]>>(src ? `/seasons/${src}/filter-values/` : null);
   const others = seasons?.filter((s) => s.id !== sid) ?? [];
   const [stage, setStage] = useState("initial");
-  const body = (dry: boolean) => ({ stage, source: Number(src), top: top ? Number(top) : undefined, dry_run: dry,
-    filters: Object.fromEntries(filters.filter((f) => f.value.trim()).map((f) => [f.field, f.value.trim()])) });
+  const [selected, setSelected] = useState<Record<number, any>>({});
+  const [busy, setBusy] = useState(false);
+  const selectedCount = Object.keys(selected).length;
+  const toggle = (p: any) => setSelected((old) => {
+    const next = { ...old };
+    if (next[p.id]) delete next[p.id]; else next[p.id] = p;
+    return next;
+  });
+  const body = (dry: boolean) => dry
+    ? { stage, source: Number(src), dry_run: true, top: top ? Number(top) : undefined,
+        filters: Object.fromEntries(filters.filter((f) => f.value.trim()).map((f) => [f.field, f.value.trim()])) }
+    : { stage, source: Number(src), dry_run: false, player_ids: Object.keys(selected).map(Number) };
   const run = async (dry: boolean) => {
-    setMsg("");
-    try { const r = await api(`/seasons/${sid}/import-from/`, { method: "POST", body: body(dry) }); setPrev(r);
-      if (!dry) setMsg(`${r.new} jogador(es) trazido(s)${r.already ? `; ${r.already} já estavam aqui` : ""}.`); }
-    catch (x: any) { setMsg(x.message); }
+    setMsg(""); setBusy(true);
+    try {
+      const r = await api(`/seasons/${sid}/import-from/`, { method: "POST", body: body(dry) });
+      setPrev(r);
+      if (!dry) {
+        setSelected({});
+        setMsg(`${r.new} jogador(es) trazido(s)${r.already ? `; ${r.already} já estavam aqui` : ""}.`);
+      }
+    } catch (x: any) { setMsg(x.message); }
+    finally { setBusy(false); }
   };
   const setF = (i: number, patch: object) => { setFilters(filters.map((f, j) => (j === i ? { ...f, ...patch } : f))); setPrev(undefined); };
   return (
-    <div className="card space-y-3">
+    <fieldset disabled={busy} className="card space-y-3">
       <SectionTitle icon={Users}>Usar jogadores de outro campeonato</SectionTitle>
       <label className="text-sm block">Entrada no campeonato
-        <select className="inp mt-1" value={stage} onChange={(e) => { setStage(e.target.value); setPrev(undefined); setMsg(""); }}>
+        <select className="inp mt-1" value={stage} onChange={(e) => { setStage(e.target.value); setPrev(undefined); setMsg(""); setSelected({}); }}>
           <option value="initial">Início do campeonato</option>
           <option value="knockout">Direto no mata-mata (após os playoffs)</option>
         </select>
       </label>
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-sm block"><span className="text-muted">Campeonato de origem</span>
-          <select className="inp mt-1 !w-56" value={src} onChange={(e) => { setSrc(e.target.value); setPrev(undefined); }}>
+          <select className="inp mt-1 !w-56" value={src} onChange={(e) => { setSrc(e.target.value); setPrev(undefined); setSelected({}); setMsg(""); }}>
             <option value="">Escolha…</option>{others.map((s) => <option key={s.id} value={s.id}>{s.name} {s.year}</option>)}</select></label>
         <label className="text-sm block"><span className="text-muted">Só os N primeiros da classificação</span>
           <input className="inp mt-1 !w-24" type="number" min={1} value={top} onChange={(e) => { setTop(e.target.value); setPrev(undefined); }} placeholder="todos" /></label>
@@ -721,18 +737,32 @@ function ImportPanel({ sid }: { sid: number }) {
           <button className="text-muted hover:text-ice" onClick={() => { setFilters(filters.filter((_, j) => j !== i)); setPrev(undefined); }}>remover</button>
         </div>))}
       <div className="flex flex-wrap items-center gap-2">
-        <button className="btn-soft btn" onClick={() => setFilters([...filters, { field: "campus", value: "" }])}>+ Filtro</button>
-        <button className="btn-soft btn" disabled={!src} onClick={() => run(true)}>Ver quem entra</button>
-        <button className="btn" disabled={!src || !prev || prev.new === 0} onClick={() => run(false)}>Trazer {prev ? `${prev.new} jogador(es)` : ""}</button>
+        <button className="btn-soft btn" onClick={() => setFilters([...filters, { field: "name", value: "" }])}>+ Filtro</button>
+        <button className="btn-soft btn" disabled={!src} onClick={() => run(true)}>Buscar jogadores</button>
+        <button className="btn" disabled={!src || selectedCount === 0} onClick={() => run(false)}>Trazer {selectedCount} selecionado(s)</button>
         <span className="text-sm text-teal">{msg}</span>
       </div>
       {prev?.dry_run && (
         <div className="text-sm">
           <p className="text-muted">{prev.matched} atendem ao filtro · {prev.new} novos · {prev.already} já estão neste campeonato</p>
-          <p className="max-h-32 overflow-y-auto">{prev.players.map((p: any) => <span key={p.id} className={`inline-block mr-2 ${p.new ? "" : "text-muted line-through"}`}>{p.nickname}{p.campus && ` (${p.campus})`}</span>)}</p>
+          <div className="max-h-64 overflow-y-auto space-y-2">{prev.players.map((p: any) => (
+            <label key={p.id} className={`flex items-center gap-2 ${p.new ? "" : "text-muted"}`}>
+              <input type="checkbox" disabled={!p.new} checked={!!selected[p.id]} onChange={() => toggle(p)} />
+              <span>{p.name} · {p.nickname}{p.campus && ` (${p.campus})`}{!p.new && " — já está no campeonato"}</span>
+            </label>
+          ))}</div>
         </div>)}
+      {selectedCount > 0 && <div className="text-sm space-y-2">
+        <p>{selectedCount} selecionado(s). A seleção é mantida ao mudar os filtros.</p>
+        <div className="flex flex-wrap gap-2">{Object.values(selected).map((p: any) => (
+          <button key={p.id} className="btn-soft btn" onClick={() => toggle(p)} aria-label={`Remover ${p.name} da seleção`}>
+            {p.name} · {p.nickname} ×
+          </button>
+        ))}</div>
+        <button className="btn-soft btn" onClick={() => setSelected({})}>Limpar seleção</button>
+      </div>}
       <p className="text-xs text-muted">Vários filtros se combinam (todos precisam bater). Os dados do jogador (nome, nick, time, campus…) são copiados; resultados e pontos não. A entrada inicial funciona antes da 1ª rodada. A entrada direta no mata-mata funciona após concluir os playoffs e antes de gerar a chave; os novos jogadores se juntam aos classificados locais. O total deve fechar 2, 4, 8, 16 ou 32 vagas.</p>
-    </div>
+    </fieldset>
   );
 }
 
@@ -864,7 +894,7 @@ export function Admin({ sid }: { sid: number }) {
       </div>
       <p className="text-xs text-muted -mt-2">Importe a planilha de inscrições (aba "ea-sports-fc-26") uma vez; os jogadores entram sozinhos fazendo check-in pelo telefone na tela inicial.</p>
       <CheckinPanel sid={sid} />
-      <ImportPanel sid={sid} />
+      <ImportPanel key={sid} sid={sid} />
       <GeneratePanel sid={sid} />
       <ImagesPanel sid={sid} />
       <DisputesPanel sid={sid} n={n} />

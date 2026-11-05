@@ -299,3 +299,41 @@ class RegionalKnockoutImportTests(TestCase):
         response = c.post(f'/api/seasons/{self.season.id}/import-from/', payload, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['new'], 4)
+
+
+class SelectedPlayerImportTests(TestCase):
+    def setUp(self):
+        self.source = mk_season(3)
+        self.target = mk_season(0)
+        self.players = list(self.source.players.order_by("id"))
+        self.players[0].name = "Ana Silva"
+        self.players[0].save()
+        self.client = APIClient()
+        self.client.force_authenticate(User.objects.create_superuser("selection@test.local", "test-only"))
+        self.url = f"/api/seasons/{self.target.id}/import-from/"
+
+    def test_search_by_name_then_import_selection_from_multiple_searches(self):
+        response = self.client.post(self.url, {"source": self.source.id, "filters": {"name": "ANA"}}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([p["id"] for p in response.data["players"]], [self.players[0].id])
+        self.assertEqual(response.data["players"][0]["name"], "Ana Silva")
+        response = self.client.post(self.url, {"source": self.source.id, "filters": {"nickname": self.players[2].nickname}}, format="json")
+        self.assertEqual([p["id"] for p in response.data["players"]], [self.players[2].id])
+        ids = [self.players[0].id, self.players[2].id]
+        response = self.client.post(self.url, {"source": self.source.id, "player_ids": ids, "dry_run": False}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["new"], 2)
+        self.assertEqual(set(self.target.players.values_list("user_id", flat=True)), {self.players[0].user_id, self.players[2].user_id})
+
+    def test_empty_selection_imports_nobody(self):
+        result = sv.import_players_from(self.target, self.source, dry_run=False, player_ids=[])
+        self.assertEqual(result["new"], 0)
+        self.assertFalse(self.target.players.exists())
+
+    def test_invalid_selection_is_rejected_atomically(self):
+        foreign = mk_season(1).players.first()
+        for ids in ([self.players[0].id, foreign.id], "all", [True], [-1]):
+            with self.subTest(ids=ids):
+                response = self.client.post(self.url, {"source": self.source.id, "player_ids": ids, "dry_run": False}, format="json")
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(self.target.players.exists())
