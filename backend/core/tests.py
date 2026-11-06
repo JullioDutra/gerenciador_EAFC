@@ -325,6 +325,33 @@ class RegionalKnockoutImportTests(TestCase):
         self.assertEqual(r.status_code, 200); self.assertIsNone(r.data['position'])
 
 
+    def test_rejoin_player_who_already_played_here(self):
+        players = list(self.season.players.order_by('id'))
+        loser, direct = players[4], players[0]  # p4 perdeu no playoff; p0 é classificado direto
+        r = sv.import_players_from(self.season, self.season, stage='knockout')  # origem = o próprio campeonato
+        state = {x['id']: (x['new'], x['rejoin']) for x in r['players']}
+        self.assertEqual(state[loser.id], (True, True))
+        self.assertEqual(state[direct.id][0], False)  # já classificado: não dá para puxar de novo
+        self.assertEqual(state[players[2].id][0], False)  # venceu o playoff: já está no mata-mata
+        sv.import_players_from(self.season, self.season, dry_run=False, stage='knockout', player_ids=[loser.id])
+        loser.refresh_from_db(); self.assertEqual((loser.knockout_entry, loser.status), (True, 'main'))
+        self.assertEqual(self.season.players.count(), 6)  # não criou outro jogador
+        self.assertEqual(sv.import_players_from(self.season, self.source, stage='knockout')['ko_base'], 5)
+        sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout', player_ids=list(self.source.players.values_list('id', flat=True))[:3])
+        rnd = sv.advance(self.season)[0]
+        ids = [pid for m in rnd.matches.all() for pid in (m.player_a_id, m.player_b_id)]
+        self.assertEqual((rnd.phase, len(ids), len(set(ids))), ('qf', 8, 8)); self.assertIn(loser.id, ids)
+        loser.refresh_from_db(); self.assertEqual(loser.status, 'main')  # não foi marcado como eliminado do playoff
+        self.assertEqual(players[5].__class__.objects.get(pk=players[5].pk).status, 'eliminated')
+
+    def test_rejoined_player_keeps_league_row(self):
+        s = mk_season(4, swiss_rounds=1); sv.advance(s); play_all(s)
+        p = s.players.first(); p.knockout_entry = True; p.save()
+        self.assertIn(p.id, [r['player'].id for r in sv.standings(s)])
+        ext = Player.objects.create(season=s, user=User.objects.create_user('ext@x.com'), name='E', nickname='e', knockout_entry=True)
+        self.assertNotIn(ext.id, [r['player'].id for r in sv.standings(s)])
+
+
 class SelectedPlayerImportTests(TestCase):
     def setUp(self):
         self.source = mk_season(3)

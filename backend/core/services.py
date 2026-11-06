@@ -27,7 +27,7 @@ def notify(player, kind, text):
 
 def standings(season):
     c = cfg(season)
-    rows = {p.id: dict(player=p, j=0, v=0, e=0, d=0, gp=0, gc=0, pts=0, opps=[]) for p in season.players.filter(knockout_entry=False)}
+    rows = {p.id: dict(player=p, j=0, v=0, e=0, d=0, gp=0, gc=0, pts=0, opps=[]) for p in season.players.all()}
     for m in Match.objects.filter(round__season=season, round__phase__in=LEAGUE_PHASES, status__in=Match.DONE):
         pairs = [(m.player_a_id, m.player_b_id, m.score_a, m.score_b)]
         if m.player_b_id: pairs.append((m.player_b_id, m.player_a_id, m.score_b, m.score_a))
@@ -36,6 +36,8 @@ def standings(season):
             if oid: r["opps"].append(oid)
             k, pts = ("v", c["win"]) if gf > ga else ("d", c["loss"]) if gf < ga else ("e", c["draw"])
             r[k] += 1; r["pts"] += pts
+    # entrou direto no mata-mata sem jogar a liga: fica fora da tabela (quem jogou a liga e foi puxado de volta continua nela)
+    rows = {k: r for k, r in rows.items() if not (r["player"].knockout_entry and r["j"] == 0)}
     for r in rows.values():
         r["pts"] += sum(x.points for x in r["player"].penalties.all())
         r["sg"] = r["gp"] - r["gc"]
@@ -325,8 +327,9 @@ def select_players(source, filters=None, top=None):
 @transaction.atomic
 def import_players_from(season, source, filters=None, top=None, dry_run=True, stage="initial", player_ids=None):
     """Traz para `season` os jogadores de outro campeonato que passam no filtro (mesmo usuário, dados copiados).
-    Quem já está no campeonato é ignorado. dry_run mostra só a prévia."""
-    if source.id == season.id: raise ValueError("Escolha outro campeonato como origem.")
+    Quem já está no campeonato é ignorado — exceto na entrada direta no mata-mata, em que quem jogou aqui e não se classificou
+    (caiu na liga ou no playoff) pode ser puxado de volta; nesse caso a origem pode ser o próprio campeonato. dry_run mostra só a prévia."""
+    if source.id == season.id and stage != "knockout": raise ValueError("Escolha outro campeonato como origem.")
     season = Season.objects.select_for_update().get(pk=season.pk)
     if stage not in ("initial", "knockout"): raise ValueError("Destino da importação inválido.")
     blocked = None  # por que ainda não dá para trazer; a busca (dry_run) funciona sempre, para o admin ir selecionando antes
@@ -345,15 +348,26 @@ def import_players_from(season, source, filters=None, top=None, dry_run=True, st
         if not selected <= set(source.players.values_list("id", flat=True)):
             raise ValueError("Selecione apenas jogadores do campeonato de origem.")
         chosen = [p for p in chosen if p.id in selected]
-    have = set(season.players.values_list("user_id", flat=True))
+    here = {p.user_id: p for p in season.players.all()}
+    in_ko = set()  # já garantidos no mata-mata: diretos, vencedores do playoff e quem já foi trazido
+    if stage == "knockout" and not blocked:
+        in_ko = {r["player"].id for r in standings(season)[:cfg(season)["direct"]]}
+        in_ko |= {m.winner_id for m in season.rounds.last().matches.all() if m.winner_id}
+        in_ko |= set(season.players.filter(knockout_entry=True).values_list("id", flat=True))
     out = []
     for p in chosen:
-        new = p.user_id not in have
+        mine = here.get(p.user_id)
+        rejoin = stage == "knockout" and mine is not None and mine.id not in in_ko and mine.status != "blocked"
+        new = mine is None or rejoin
         if new and not dry_run:
-            Player.objects.create(season=season, user=p.user, knockout_entry=stage == "knockout",
-                                  status="main" if stage == "knockout" else "active",
-                                  **{f: getattr(p, f) for f in IMPORT_COPY})
-        out.append({"id": p.id, "name": p.name, "nickname": p.nickname, "team": p.team, "campus": p.campus, "new": new})
+            if rejoin:  # já jogou aqui: mantém os jogos da liga e volta para o mata-mata
+                mine.knockout_entry = True; mine.status = "main"; mine.save(update_fields=["knockout_entry", "status"])
+                notify(mine, "knockout_entry", "Você foi incluído no mata-mata final.")
+            else:
+                Player.objects.create(season=season, user=p.user, knockout_entry=stage == "knockout",
+                                      status="main" if stage == "knockout" else "active",
+                                      **{f: getattr(p, f) for f in IMPORT_COPY})
+        out.append({"id": p.id, "name": p.name, "nickname": p.nickname, "team": p.team, "campus": p.campus, "new": new, "rejoin": rejoin})
     n_new = sum(x["new"] for x in out)
     ko_base = None  # quantos já estão garantidos no mata-mata (diretos + vencedores do playoff + externos já trazidos)
     if stage == "knockout" and not blocked:
@@ -608,9 +622,11 @@ def advance(season, count=1, sched=None):
     if last.phase == "playoff2":
         pool = _playoff_split(rank, c)[0]
         q = sorted(_winners(season, "playoff2"), key=rank.index); _flag(q, "main")
-        _flag([p for p in pool if p not in q], "eliminated"); top = rank[:d]
         external = list(season.players.filter(knockout_entry=True).exclude(status="blocked").order_by("id"))
+        _flag([p for p in pool if p not in q and p not in external], "eliminated"); top = rank[:d]
+        external = [p for p in external if p not in top and p not in q]  # puxado de volta nunca entra duas vezes
         if external:
+            _flag(external, "main")
             qualified = top + external + q  # externos entram junto dos classificados diretos; os vencedores do playoff são os últimos cabeças
             if len(qualified) not in KO_BY_SIZE:
                 raise ValueError(f"{len(qualified)} classificados no total. Complete 2, 4, 8, 16 ou 32 jogadores antes de gerar o mata-mata.")
