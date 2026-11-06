@@ -258,7 +258,7 @@ def apply_wo(m, winner, reason):
 
 PHASE_DEPTH = {"swiss": 0, "groups": 0, "playoff1": 1, "playoff2": 2, "r32": 3, "r16": 4, "qf": 5, "sf": 6, "final": 7}
 PHASE_LABEL = {"swiss": "Fase de liga", "groups": "Fase de grupos", "playoff1": "Playoff — Fase 1", "playoff2": "Playoff — Fase 2",
-    "r32": "32-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final", "champion": "Campeão"}
+    "r32": "16-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final", "champion": "Campeão"}
 
 def stats(season):
     ms = list(Match.objects.filter(round__season=season, status__in=Match.DONE).select_related("round"))
@@ -591,7 +591,7 @@ def _first_knockout(season):
                 pr[1], other[1] = other[1], pr[1]; break
     qualified = [r["player"] for r in q]
     _flag(qualified, "main"); _flag([r["player"] for r in rows if r["player"] not in qualified], "eliminated")
-    phase = KO_BY_SIZE[len(q)]; names = {"r32": "32-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final"}
+    phase = KO_BY_SIZE[len(q)]; names = {"r32": "16-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final"}
     return phase, names[phase], [tuple(pr) for pr in pairs]
 
 def _first_knockout_all(season):
@@ -606,7 +606,7 @@ def _first_knockout_all(season):
     order = _bracket_order(size)
     pairs = [(by_seed[order[i]], by_seed.get(order[i + 1])) for i in range(0, size, 2)]  # seed inexistente = folga
     _flag(players, "main")
-    phase = KO_BY_SIZE[size]; names = {"r32": "32-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final"}
+    phase = KO_BY_SIZE[size]; names = {"r32": "16-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final"}
     return phase, names[phase], pairs
 
 def _main_knockout(season, rank, c, sched):
@@ -617,7 +617,7 @@ def _main_knockout(season, rank, c, sched):
     _flag([p for p in pool if p not in q and p not in external], "eliminated"); top = rank[:d]
     external = [p for p in external if p not in top and p not in q]  # puxado de volta nunca entra duas vezes
     if not external and len(top) == len(q) and 2 * len(top) in KO_BY_SIZE:  # formato original: 1º direto x último do playoff
-        return [_new_round(season, "r32", "32-avos", [(top[i], q[-1 - i]) for i in range(len(top))], sched)]
+        return [_new_round(season, "r32", "16-avos", [(top[i], q[-1 - i]) for i in range(len(top))], sched)]
     _flag(external, "main")
     qualified = top + external + q  # externos entram junto dos classificados diretos; os vencedores do playoff são os últimos cabeças
     if len(qualified) not in KO_BY_SIZE:

@@ -427,3 +427,24 @@ class SelectedPlayerImportTests(TestCase):
                 response = self.client.post(self.url, {"source": self.source.id, "player_ids": ids, "dry_run": False}, format="json")
                 self.assertEqual(response.status_code, 400)
                 self.assertFalse(self.target.players.exists())
+
+
+class RoundOf32AndNamesTests(TestCase):
+    def test_32_players_is_16avos_and_players_filtered_by_season(self):
+        s = mk_season(32, format="knockout"); other = mk_season(3)
+        rd = sv.advance(s)[0]
+        self.assertEqual((rd.phase, rd.name, rd.matches.count()), ("r32", "16-avos", 16))
+        c = APIClient()
+        self.assertEqual(len(c.get(f"/api/players/?season={s.id}").data), 32)  # antes devolvia os jogadores de todos os campeonatos
+        self.assertEqual(len(c.get(f"/api/players/?season={other.id}").data), 3)
+
+    def test_migration_renames_old_round(self):
+        from importlib import import_module
+        from django.apps import apps
+        from .models import Round
+        s = mk_season(2)
+        r = Round.objects.create(season=s, phase="r32", number=1, name="32-avos")
+        keep = Round.objects.create(season=s, phase="swiss", number=2, name="32-avos")  # só renomeia a fase r32
+        import_module("core.migrations.0006_rename_round_of_32").rename(apps, None)
+        r.refresh_from_db(); keep.refresh_from_db()
+        self.assertEqual((r.name, keep.name), ("16-avos", "32-avos"))
