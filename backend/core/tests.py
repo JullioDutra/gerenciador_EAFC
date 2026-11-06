@@ -306,7 +306,7 @@ class RegionalKnockoutImportTests(TestCase):
     def test_search_by_name_before_playoffs_and_seeding(self):
         self.round.matches.update(status='pending', winner=None)
         r = sv.import_players_from(self.season, self.source, {'q': self.source.players.first().nickname}, stage='knockout')
-        self.assertEqual(r['matched'], 1); self.assertIn('playoffs', r['blocked'])  # dá para buscar e ir selecionando antes
+        self.assertEqual(r['matched'], 1); self.assertIn('sem resultado confirmado', r['blocked'])  # dá para buscar e ir selecionando antes
         self.round.matches.update(status='confirmed')
         for m in self.round.matches.all(): m.winner = m.player_a; m.save()
         sv.import_players_from(self.season, self.source, dry_run=False, stage='knockout')
@@ -350,6 +350,45 @@ class RegionalKnockoutImportTests(TestCase):
         self.assertIn(p.id, [r['player'].id for r in sv.standings(s)])
         ext = Player.objects.create(season=s, user=User.objects.create_user('ext@x.com'), name='E', nickname='e', knockout_entry=True)
         self.assertNotIn(ext.id, [r['player'].id for r in sv.standings(s)])
+
+
+class PlayoffWithoutPhaseTwoTests(TestCase):
+    """Config. em que todos do playoff jogam a Fase 1 (ex.: 20 no playoff, 10 classificados): não existe Fase 2."""
+    def league_after_playoff1(self, n, **cfg):
+        s = mk_season(n, swiss_rounds=1, **cfg)
+        sv.advance(s); play_all(s)  # liga
+        self.assertEqual(sv.advance(s)[0].phase, 'playoff1'); play_all(s)
+        return s
+
+    def test_import_unlocks_after_phase_one_and_bracket_closes(self):
+        s = self.league_after_playoff1(6, direct=2, playoff_size=4, playoff_qualify=2)
+        src = mk_season(4)
+        r = sv.import_players_from(s, src, stage='knockout')
+        self.assertIsNone(r['blocked']); self.assertEqual(r['ko_base'], 4)  # 2 diretos + 2 vencedores da Fase 1
+        sv.import_players_from(s, src, dry_run=False, stage='knockout')
+        rnd = sv.advance(s)[0]
+        ids = [pid for m in rnd.matches.all() for pid in (m.player_a_id, m.player_b_id)]
+        self.assertEqual((rnd.phase, len(set(ids))), ('qf', 8))
+        self.assertFalse(s.rounds.filter(phase='playoff2').exists())  # não cria Fase 2 vazia
+
+    def test_incomplete_total_gives_clear_error_instead_of_broken_bracket(self):
+        s = self.league_after_playoff1(8, direct=2, playoff_size=6, playoff_qualify=3)  # 2 diretos + 3 do playoff = 5
+        with self.assertRaisesMessage(ValueError, '5 classificados'):
+            sv.advance(s)
+        self.assertEqual(s.rounds.last().phase, 'playoff1')
+
+    def test_old_empty_phase_two_still_works(self):
+        from .models import Round
+        s = self.league_after_playoff1(6, direct=2, playoff_size=4, playoff_qualify=2)
+        Round.objects.create(season=s, phase='playoff2', number=99, name='Playoff — Fase 2')  # gerada vazia pela versão antiga
+        src = mk_season(4)
+        self.assertIsNone(sv.import_players_from(s, src, stage='knockout')['blocked'])
+        sv.import_players_from(s, src, dry_run=False, stage='knockout')
+        self.assertEqual(sv.advance(s)[0].phase, 'qf')
+
+    def test_blocked_message_names_the_problem(self):
+        s = mk_season(6, swiss_rounds=2, direct=2, playoff_size=4, playoff_qualify=2); sv.advance(s)
+        self.assertIn('Rodada 1', sv.import_players_from(s, mk_season(2), stage='knockout')['blocked'])
 
 
 class SelectedPlayerImportTests(TestCase):

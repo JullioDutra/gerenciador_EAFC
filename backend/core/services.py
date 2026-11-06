@@ -336,7 +336,12 @@ def import_players_from(season, source, filters=None, top=None, dry_run=True, st
     if stage == "knockout":
         last = season.rounds.last()
         if is_groups(season) or is_knockout(season): blocked = "A entrada direta no mata-mata vale só para campeonatos em fase de liga com playoff."
-        elif not last or last.phase != "playoff2" or _open(season): blocked = "Importe para o mata-mata após concluir os playoffs e antes de gerar a chave."
+        elif playoff_final_round(season) is None:
+            blocked = (f"A última rodada gerada é “{last.name}”: " if last else "Nenhuma rodada gerada ainda: ") + \
+                "a entrada direta no mata-mata vale depois dos playoffs e antes de gerar a chave."
+        elif _open(season):
+            n = Match.objects.filter(round__season=season).exclude(status__in=Match.DONE).count()
+            blocked = f"Ainda há {n} partida(s) do playoff sem resultado confirmado (pendente ou em disputa). Conclua e tente de novo."
     elif season.rounds.exists():
         blocked = "O campeonato já começou; escolha a entrada direta no mata-mata após os playoffs."
     if blocked and not dry_run: raise ValueError(blocked)
@@ -352,7 +357,7 @@ def import_players_from(season, source, filters=None, top=None, dry_run=True, st
     in_ko = set()  # já garantidos no mata-mata: diretos, vencedores do playoff e quem já foi trazido
     if stage == "knockout" and not blocked:
         in_ko = {r["player"].id for r in standings(season)[:cfg(season)["direct"]]}
-        in_ko |= {m.winner_id for m in season.rounds.last().matches.all() if m.winner_id}
+        in_ko |= {m.winner_id for m in playoff_final_round(season).matches.all() if m.winner_id}
         in_ko |= set(season.players.filter(knockout_entry=True).values_list("id", flat=True))
     out = []
     for p in chosen:
@@ -371,7 +376,7 @@ def import_players_from(season, source, filters=None, top=None, dry_run=True, st
     n_new = sum(x["new"] for x in out)
     ko_base = None  # quantos já estão garantidos no mata-mata (diretos + vencedores do playoff + externos já trazidos)
     if stage == "knockout" and not blocked:
-        ko_base = min(cfg(season)["direct"], len(standings(season))) + season.rounds.last().matches.count() \
+        ko_base = min(cfg(season)["direct"], len(standings(season))) + playoff_final_round(season).matches.count() \
             + season.players.filter(knockout_entry=True).exclude(status="blocked").count()
     return {"matched": len(out), "new": n_new, "already": len(out) - n_new, "players": out, "dry_run": dry_run, "blocked": blocked,
             "ko_base": ko_base}
@@ -554,6 +559,17 @@ def _playoff_split(rank, c):
     n_low = 2 * (c["playoff_size"] - c["playoff_qualify"])  # 32 piores jogam a fase 1
     return pool, pool[:len(pool) - n_low], pool[len(pool) - n_low:]  # pool, upper (entram depois), lower
 
+def playoff_final_round(season):
+    """Rodada cujos vencedores saem classificados do playoff, se o playoff já foi gerado: a Fase 2, ou a Fase 1 quando
+    não existe Fase 2 (todos do playoff jogam a Fase 1 — ex.: 20 no playoff e 10 classificados). None se ainda não chegou lá."""
+    last = season.rounds.last()
+    if not last: return None
+    p1 = season.rounds.filter(phase="playoff1").last()
+    if last.phase == "playoff2": return last if last.matches.exists() else p1  # Fase 2 vazia (gerada antes desta correção)
+    if last.phase == "playoff1":
+        if not _playoff_split([r["player"] for r in standings(season)], cfg(season))[1]: return last
+    return None
+
 def _bracket_order(n):
     """Ordem de cabeças de chave de um mata-mata de n vagas (1 só reencontra 2 na final): n=8 -> 1,8,4,5,2,7,3,6."""
     order = [1]
@@ -593,6 +609,24 @@ def _first_knockout_all(season):
     phase = KO_BY_SIZE[size]; names = {"r32": "32-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final"}
     return phase, names[phase], pairs
 
+def _main_knockout(season, rank, c, sched):
+    """Fim do playoff: classificados diretos + quem entrou direto no mata-mata + vencedores do playoff formam a chave."""
+    d = c["direct"]; pool = _playoff_split(rank, c)[0]
+    q = sorted([m.winner for m in playoff_final_round(season).matches.order_by("slot")], key=rank.index); _flag(q, "main")
+    external = list(season.players.filter(knockout_entry=True).exclude(status="blocked").order_by("id"))
+    _flag([p for p in pool if p not in q and p not in external], "eliminated"); top = rank[:d]
+    external = [p for p in external if p not in top and p not in q]  # puxado de volta nunca entra duas vezes
+    if not external and len(top) == len(q) and 2 * len(top) in KO_BY_SIZE:  # formato original: 1º direto x último do playoff
+        return [_new_round(season, "r32", "32-avos", [(top[i], q[-1 - i]) for i in range(len(top))], sched)]
+    _flag(external, "main")
+    qualified = top + external + q  # externos entram junto dos classificados diretos; os vencedores do playoff são os últimos cabeças
+    if len(qualified) not in KO_BY_SIZE:
+        raise ValueError(f"{len(qualified)} classificados no total. Complete 2, 4, 8, 16 ou 32 jogadores antes de gerar o mata-mata.")
+    order = _bracket_order(len(qualified))
+    pairs = [(qualified[order[i] - 1], qualified[order[i + 1] - 1]) for i in range(0, len(order), 2)]
+    phase = KO_BY_SIZE[len(qualified)]
+    return [_new_round(season, phase, PHASE_LABEL[phase], pairs, sched)]
+
 @transaction.atomic
 def advance(season, count=1, sched=None):
     """Avança para a próxima fase/rodada quando tudo está confirmado. Sempre devolve uma lista de rodadas criadas."""
@@ -615,26 +649,14 @@ def advance(season, count=1, sched=None):
         pool, upper, lower = _playoff_split(rank, c)
         _flag(rank[d + c["playoff_size"]:], "eliminated"); _flag(rank[:d], "main"); _flag(pool, "playoff")
         return [_new_round(season, "playoff1", "Playoff — Fase 1", [(lower[i], lower[-1 - i]) for i in range(len(lower) // 2)], sched)]
+    if last.phase == "playoff1" and not _playoff_split(rank, c)[1]:
+        return _main_knockout(season, rank, c, sched)  # sem Fase 2: os vencedores da Fase 1 já são os classificados
     if last.phase == "playoff1":
         _, upper, _ = _playoff_split(rank, c)
         w = sorted(_winners(season, "playoff1"), key=rank.index)
         return [_new_round(season, "playoff2", "Playoff — Fase 2", [(upper[i], w[-1 - i]) for i in range(len(upper))], sched)]
     if last.phase == "playoff2":
-        pool = _playoff_split(rank, c)[0]
-        q = sorted(_winners(season, "playoff2"), key=rank.index); _flag(q, "main")
-        external = list(season.players.filter(knockout_entry=True).exclude(status="blocked").order_by("id"))
-        _flag([p for p in pool if p not in q and p not in external], "eliminated"); top = rank[:d]
-        external = [p for p in external if p not in top and p not in q]  # puxado de volta nunca entra duas vezes
-        if external:
-            _flag(external, "main")
-            qualified = top + external + q  # externos entram junto dos classificados diretos; os vencedores do playoff são os últimos cabeças
-            if len(qualified) not in KO_BY_SIZE:
-                raise ValueError(f"{len(qualified)} classificados no total. Complete 2, 4, 8, 16 ou 32 jogadores antes de gerar o mata-mata.")
-            order = _bracket_order(len(qualified))
-            pairs = [(qualified[order[i] - 1], qualified[order[i + 1] - 1]) for i in range(0, len(order), 2)]
-            phase = KO_BY_SIZE[len(qualified)]
-            return [_new_round(season, phase, PHASE_LABEL[phase], pairs, sched)]
-        return [_new_round(season, "r32", "32-avos", [(top[i], q[-1 - i]) for i in range(len(top))], sched)]
+        return _main_knockout(season, rank, c, sched)
     if last.phase == "final":
         champ = last.matches.first().winner; season.champion = champ; season.save()
         Player.objects.filter(id=champ.id).update(status="champion"); return [last]
