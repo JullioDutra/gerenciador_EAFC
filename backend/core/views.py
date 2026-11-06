@@ -151,6 +151,9 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
 class PlayerViewSet(viewsets.ModelViewSet):
     queryset = Player.objects.all(); serializer_class = PlayerS; permission_classes = [AdminOrReadOnly]
+    def get_queryset(self):  # ?season=ID: só os jogadores daquele campeonato
+        sid = self.request.query_params.get("season")
+        return Player.objects.filter(season=sid) if sid else Player.objects.all()
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAdminUser])
     def penalty(self, req, pk=None):  # {"points": -3, "reason": "..."}  positivo = bônus, negativo = punição
         pt = Penalty.objects.create(player=self.get_object(), points=int(req.data["points"]), reason=req.data.get("reason", ""))

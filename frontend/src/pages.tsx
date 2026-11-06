@@ -24,7 +24,9 @@ function SectionTitle({ icon: Icon, children }: { icon: any; children: ReactNode
 
 function useNames(sid: number) {
   const { data } = useData<any[]>(`/seasons/${sid}/standings/`);
-  const names: Record<number, string> = {}; data?.forEach((r) => (names[r.player.id] = r.player.nickname + (r.player.team ? ` (${r.player.team})` : "")));
+  const { data: players } = useData<any[]>(`/players/?season=${sid}`);  // inclui quem entrou direto no mata-mata (fora da tabela da liga)
+  const label = (p: any) => p.nickname + (p.team ? ` (${p.team})` : "");
+  const names: Record<number, string> = {}; players?.forEach((p) => (names[p.id] = label(p))); data?.forEach((r) => (names[r.player.id] = label(r.player)));
   return { rows: data, n: (id: number | null) => (id ? names[id] ?? `#${id}` : "Folga") };
 }
 const score = (m: any) => (m.score_a === null ? "—" : `${m.score_a} x ${m.score_b}${m.pen_a != null ? ` (${m.pen_a}-${m.pen_b} pên.)` : ""}`);
@@ -611,13 +613,14 @@ function DeadlinesPanel({ sid }: { sid: number }) {
       <span className="text-sm text-teal">{msg}</span>
       {rounds?.map((r) => (
         <div key={r.id} className="flex flex-wrap items-center gap-2 py-1.5 border-t border-line text-sm">
-          <span className="flex-1">{r.name}</span>
+          <input key={r.name} className="inp flex-1 !min-w-[10rem] !py-1" defaultValue={r.name} title="Nome da rodada (clique para renomear)"
+            onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== r.name) save(r.id, { name: v }, "Nome da rodada atualizado."); }} />
           <select className="inp !w-40 !py-1" value={r.match_format} onChange={(e) => save(r.id, { match_format: e.target.value }, "Formato atualizado.")}>
             {Object.entries(FORMAT_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
           <input className="inp !w-56 !py-1" type="datetime-local" defaultValue={r.deadline?.slice(0, 16)} onBlur={(e) => e.target.value && save(r.id, { deadline: new Date(e.target.value).toISOString() }, "Prazo atualizado.")} />
         </div>))}
-      <p className="text-xs text-muted">Mudar o formato só afeta jogos ainda não iniciados nesta rodada. Mudar o prazo da rodada vale para as partidas que ainda seguiam o prazo antigo.</p>
+      <p className="text-xs text-muted">Clique no nome para renomear a rodada. Mudar o formato só afeta jogos ainda não iniciados nesta rodada. Mudar o prazo da rodada vale para as partidas que ainda seguiam o prazo antigo.</p>
     </div>
   );
 }
