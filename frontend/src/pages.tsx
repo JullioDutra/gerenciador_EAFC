@@ -685,8 +685,9 @@ function ImportPanel({ sid }: { sid: number }) {
   const [src, setSrc] = useState(""); const [filters, setFilters] = useState<{ field: string; value: string }[]>([]); const [top, setTop] = useState("");
   const [prev, setPrev] = useState<any>(); const [msg, setMsg] = useState("");
   const { data: values } = useData<Record<string, string[]>>(src ? `/seasons/${src}/filter-values/` : null);
-  const others = seasons?.filter((s) => s.id !== sid) ?? [];
   const [stage, setStage] = useState("initial");
+  // no mata-mata dá para puxar de volta quem jogou aqui e não se classificou, então o próprio campeonato vira origem
+  const others = (stage === "knockout" ? seasons : seasons?.filter((s) => s.id !== sid)) ?? [];
   const [selected, setSelected] = useState<Record<number, any>>({});
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");  // busca rápida por nome ou apelido
@@ -717,7 +718,7 @@ function ImportPanel({ sid }: { sid: number }) {
     <fieldset disabled={busy} className="card space-y-3">
       <SectionTitle icon={Users}>Usar jogadores de outro campeonato</SectionTitle>
       <label className="text-sm block">Entrada no campeonato
-        <select className="inp mt-1" value={stage} onChange={(e) => { setStage(e.target.value); setPrev(undefined); setMsg(""); setSelected({}); }}>
+        <select className="inp mt-1" value={stage} onChange={(e) => { setStage(e.target.value); setPrev(undefined); setMsg(""); setSelected({}); if (e.target.value !== "knockout" && Number(src) === sid) setSrc(""); }}>
           <option value="initial">Início do campeonato</option>
           <option value="knockout">Direto no mata-mata (após os playoffs)</option>
         </select>
@@ -725,7 +726,7 @@ function ImportPanel({ sid }: { sid: number }) {
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-sm block"><span className="text-muted">Campeonato de origem</span>
           <select className="inp mt-1 !w-56" value={src} onChange={(e) => { setSrc(e.target.value); setPrev(undefined); setSelected({}); setMsg(""); }}>
-            <option value="">Escolha…</option>{others.map((s) => <option key={s.id} value={s.id}>{s.name} {s.year}</option>)}</select></label>
+            <option value="">Escolha…</option>{others.map((s) => <option key={s.id} value={s.id}>{s.name} {s.year}{s.id === sid ? " (este campeonato)" : ""}</option>)}</select></label>
         <label className="text-sm block"><span className="text-muted">Só os N primeiros da classificação</span>
           <input className="inp mt-1 !w-24" type="number" min={1} value={top} onChange={(e) => { setTop(e.target.value); setPrev(undefined); }} placeholder="todos" /></label>
       </div>
@@ -749,7 +750,7 @@ function ImportPanel({ sid }: { sid: number }) {
       </div>
       {prev?.dry_run && (
         <div className="text-sm">
-          <p className="text-muted">{prev.matched} atendem ao filtro · {prev.new} novos · {prev.already} já estão neste campeonato</p>
+          <p className="text-muted">{prev.matched} atendem ao filtro · {prev.new} podem entrar · {prev.already} já {stage === "knockout" ? "estão no mata-mata" : "estão neste campeonato"}</p>
           {prev.ko_base != null && (() => { const total = prev.ko_base + selectedCount; const ok = [2, 4, 8, 16, 32].includes(total);
             return <p className={ok ? "text-teal" : "text-gold"}>Mata-mata: {prev.ko_base} já classificados + {selectedCount} selecionado(s) = <b>{total}</b>
               {ok ? " — fecha a chave." : " — precisa fechar 2, 4, 8, 16 ou 32 para gerar a chave."}</p>; })()}
@@ -761,7 +762,7 @@ function ImportPanel({ sid }: { sid: number }) {
           <div className="max-h-64 overflow-y-auto space-y-2">{prev.players.map((p: any) => (
             <label key={p.id} className={`flex items-center gap-2 ${p.new ? "" : "text-muted"}`}>
               <input type="checkbox" disabled={!p.new} checked={!!selected[p.id]} onChange={() => toggle(p)} />
-              <span>{p.name} · {p.nickname}{p.campus && ` (${p.campus})`}{!p.new && " — já está no campeonato"}</span>
+              <span>{p.name} · {p.nickname}{p.campus && ` (${p.campus})`}{p.rejoin ? " — já jogou aqui, volta para o mata-mata" : !p.new && (stage === "knockout" ? " — já está no mata-mata" : " — já está no campeonato")}</span>
             </label>
           ))}</div>
         </div>)}
@@ -774,7 +775,7 @@ function ImportPanel({ sid }: { sid: number }) {
         ))}</div>
         <button className="btn-soft btn" onClick={() => setSelected({})}>Limpar seleção</button>
       </div>}
-      <p className="text-xs text-muted">Vários filtros se combinam (todos precisam bater). Os dados do jogador (nome, nick, time, campus…) são copiados; resultados e pontos não. A entrada inicial funciona antes da 1ª rodada. A entrada direta no mata-mata funciona após concluir os playoffs e antes de gerar a chave; os novos jogadores se juntam aos classificados locais. O total deve fechar 2, 4, 8, 16 ou 32 vagas.</p>
+      <p className="text-xs text-muted">Vários filtros se combinam (todos precisam bater). Os dados do jogador (nome, nick, time, campus…) são copiados; resultados e pontos não. A entrada inicial funciona antes da 1ª rodada. A entrada direta no mata-mata funciona após concluir os playoffs e antes de gerar a chave; os novos jogadores se juntam aos classificados locais. Para puxar de volta quem jogou aqui e não se classificou, escolha este próprio campeonato como origem (os jogos da liga dele continuam valendo). O total deve fechar 2, 4, 8, 16 ou 32 vagas.</p>
     </fieldset>
   );
 }
