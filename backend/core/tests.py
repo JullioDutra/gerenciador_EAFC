@@ -448,3 +448,42 @@ class RoundOf32AndNamesTests(TestCase):
         import_module("core.migrations.0006_rename_round_of_32").rename(apps, None)
         r.refresh_from_db(); keep.refresh_from_db()
         self.assertEqual((r.name, keep.name), ("16-avos", "32-avos"))
+
+
+class StatsTests(TestCase):
+    def test_byes_wo_penalties_legs_and_diff(self):
+        from .models import Leg, Round
+        s = mk_season(5, swiss_rounds=3)
+        a, b, c_, d, e = s.players.order_by("id")
+        rd = Round.objects.create(season=s, phase="swiss", number=1, name="R1")
+        Match.objects.create(round=rd, slot=1, player_a=a, player_b=b, score_a=3, score_b=0, winner=a, status="confirmed")
+        Match.objects.create(round=rd, slot=2, player_a=c_, player_b=None, score_a=3, score_b=0, winner=c_, status="wo")  # folga
+        Match.objects.create(round=rd, slot=3, player_a=d, player_b=e, score_a=3, score_b=0, winner=d, status="wo")      # WO
+        Match.objects.create(round=rd, slot=4, player_a=d, player_b=e, score_a=None, score_b=None, status="confirmed")   # placar vazio
+        ko = Round.objects.create(season=s, phase="sf", number=2, name="Semi")
+        Match.objects.create(round=ko, slot=1, player_a=b, player_b=c_, score_a=1, score_b=1, pen_a=5, pen_b=4, winner=b, status="confirmed")
+        ko2 = Round.objects.create(season=s, phase="final", number=3, name="Final", match_format="bo3")
+        m = Match.objects.create(round=ko2, slot=1, player_a=a, player_b=b, score_a=2, score_b=1, winner=a, status="confirmed")  # 2x1 na série
+        for n, (x, y) in enumerate([(2, 0), (0, 1), (4, 0)], 1):
+            Leg.objects.create(match=m, number=n, score_a=x, score_b=y, status="confirmed")
+        st = sv.stats(s)
+        self.assertEqual(st["total_matches"], 3)  # sem folga, sem WO, sem placar vazio
+        self.assertEqual(st["total_goals"], 3 + 2 + 7)  # série de melhor-de-3 conta gols dos jogos (2+0+4 x 0+1+0)
+        self.assertEqual(st["most_goals"]["player"]["id"], a.id); self.assertEqual(st["most_goals"]["goals"], 9)
+        self.assertEqual(st["best_diff"]["diff"], 8)  # a: 9 marcados, 1 sofrido
+        self.assertEqual(st["most_wins"]["wins"], 2)
+        c = APIClient(); self.assertEqual(c.get(f"/api/seasons/{s.id}/stats/").status_code, 200)
+        self.assertEqual(c.get(f"/api/seasons/{s.id}/standings/").status_code, 200)
+
+    def test_penalty_win_counts_as_win(self):
+        from .models import Round
+        s = mk_season(2); a, b = s.players.order_by("id")
+        rd = Round.objects.create(season=s, phase="final", number=1, name="Final")
+        Match.objects.create(round=rd, slot=1, player_a=a, player_b=b, score_a=0, score_b=0, pen_a=3, pen_b=4, winner=b, status="confirmed")
+        st = sv.stats(s)
+        self.assertEqual((st["most_wins"]["player"]["id"], st["most_wins"]["wins"]), (b.id, 1))
+        self.assertEqual(st["longest_win_streak"]["player"]["id"], b.id)
+
+    def test_empty_season(self):
+        st = sv.stats(mk_season(3))
+        self.assertEqual((st["total_matches"], st["most_wins"]), (0, None))
