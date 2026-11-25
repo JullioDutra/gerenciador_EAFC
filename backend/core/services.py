@@ -29,6 +29,8 @@ def standings(season):
     c = cfg(season)
     rows = {p.id: dict(player=p, j=0, v=0, e=0, d=0, gp=0, gc=0, pts=0, opps=[]) for p in season.players.all()}
     for m in Match.objects.filter(round__season=season, round__phase__in=LEAGUE_PHASES, status__in=Match.DONE):
+        if m.score_a is None or m.score_b is None or m.player_a_id not in rows or (m.player_b_id and m.player_b_id not in rows):
+            continue  # placar vazio ou jogador de fora (dado editado à mão): não derruba a tabela
         pairs = [(m.player_a_id, m.player_b_id, m.score_a, m.score_b)]
         if m.player_b_id: pairs.append((m.player_b_id, m.player_a_id, m.score_b, m.score_a))
         for pid, oid, gf, ga in pairs:
@@ -260,37 +262,54 @@ PHASE_DEPTH = {"swiss": 0, "groups": 0, "playoff1": 1, "playoff2": 2, "r32": 3, 
 PHASE_LABEL = {"swiss": "Fase de liga", "groups": "Fase de grupos", "playoff1": "Playoff — Fase 1", "playoff2": "Playoff — Fase 2",
     "r32": "16-avos", "r16": "Oitavas", "qf": "Quartas", "sf": "Semifinal", "final": "Final", "champion": "Campeão"}
 
+def _match_goals(m):
+    """Gols reais do confronto: soma dos jogos em ida-e-volta/melhor-de-X (o placar do confronto ali é a série, não gols)."""
+    legs = [l for l in m.legs.all() if l.status in Match.DONE and l.score_a is not None and l.score_b is not None]
+    if m.round.match_format != "single" and legs: return sum(l.score_a for l in legs), sum(l.score_b for l in legs)
+    return m.score_a, m.score_b
+
 def stats(season):
-    ms = list(Match.objects.filter(round__season=season, status__in=Match.DONE).select_related("round"))
-    per = {p.id: dict(player=p, played=0, wins=0, goals=0, best_streak=0, cur_streak=0,
-                       unbeaten=0, cur_unbeaten=0, deepest="swiss") for p in season.players.all()}
-    total_goals = total_matches = 0
+    """Só partidas disputadas de verdade: sem folga (bye), sem WO e sem placar vazio. Quem avança nos pênaltis conta como vitória."""
+    ms = [m for m in Match.objects.filter(round__season=season, status__in=("confirmed", "resolved"), player_b__isnull=False)
+          .select_related("round").prefetch_related("legs")]
+    games = []
     for m in sorted(ms, key=lambda x: (x.round.number, x.slot)):
-        pairs = [(m.player_a_id, m.score_a, m.score_b)]
-        if m.player_b_id: pairs.append((m.player_b_id, m.score_b, m.score_a))
-        total_matches += 1; total_goals += (m.score_a or 0) + (m.score_b or 0)
-        for pid, gf, ga in pairs:
-            r = per[pid]; r["played"] += 1; r["goals"] += gf
-            if PHASE_DEPTH[m.round.phase] >= PHASE_DEPTH[r["deepest"]]: r["deepest"] = m.round.phase
-            if gf > ga: r["wins"] += 1; r["cur_streak"] += 1; r["cur_unbeaten"] += 1
-            elif gf == ga: r["cur_streak"] = 0; r["cur_unbeaten"] += 1
+        ga_, gb_ = _match_goals(m)
+        if ga_ is None or gb_ is None: continue
+        games.append((m, ga_, gb_))
+    per = {p.id: dict(player=p, played=0, wins=0, goals=0, conceded=0, best_streak=0, cur_streak=0,
+                       unbeaten=0, cur_unbeaten=0, deepest="swiss") for p in season.players.all()}
+    total_goals = 0
+    for m, sa, sb in games:
+        total_goals += sa + sb
+        for pid, gf, ga in ((m.player_a_id, sa, sb), (m.player_b_id, sb, sa)):
+            r = per.get(pid)
+            if r is None: continue  # jogador de outro campeonato (dado editado à mão): ignora
+            r["played"] += 1; r["goals"] += gf; r["conceded"] += ga
+            if PHASE_DEPTH.get(m.round.phase, 0) >= PHASE_DEPTH.get(r["deepest"], 0): r["deepest"] = m.round.phase
+            won = m.winner_id == pid if m.winner_id else gf > ga  # mata-mata empatado: decide quem avançou (pênaltis)
+            lost = m.winner_id not in (None, pid) if m.winner_id else gf < ga
+            if won: r["wins"] += 1; r["cur_streak"] += 1; r["cur_unbeaten"] += 1
+            elif not lost: r["cur_streak"] = 0; r["cur_unbeaten"] += 1
             else: r["cur_streak"] = 0; r["cur_unbeaten"] = 0
             r["best_streak"] = max(r["best_streak"], r["cur_streak"]); r["unbeaten"] = max(r["unbeaten"], r["cur_unbeaten"])
-    for p in per.values():
-        if season.champion_id == p["player"].id: p["deepest"] = "champion"
-    top = lambda key: max(per.values(), key=lambda r: r[key]) if per else None
+    for r in per.values():
+        r["diff"] = r["goals"] - r["conceded"]
+        if season.champion_id == r["player"].id: r["deepest"] = "champion"
+    depth = lambda r: PHASE_DEPTH.get(r["deepest"], 8 if r["deepest"] == "champion" else 0)
+    played = [r for r in per.values() if r["played"]]
+    def top(key):  # empate: quem tem mais vitórias, depois mais gols
+        return max(played, key=lambda r: (key(r), r["wins"], r["goals"], -r["player"].id)) if played else None
     pick = lambda r: r and {"player": PlayerRef(r["player"]), **{k: r[k] for k in
-        ("played", "wins", "goals", "best_streak", "unbeaten")}, "deepest": PHASE_LABEL[r["deepest"]]}
+        ("played", "wins", "goals", "diff", "best_streak", "unbeaten")}, "deepest": PHASE_LABEL.get(r["deepest"], r["deepest"])}
     return {
-        "most_wins": pick(top("wins")), "most_goals": pick(top("goals")),
-        "best_diff": pick(max(per.values(), key=lambda r: r["goals"] - _conceded(ms, r["player"].id)) if per else None),
-        "most_played": pick(top("played")), "longest_win_streak": pick(top("best_streak")),
-        "longest_unbeaten": pick(top("unbeaten")), "best_campaign": pick(max(per.values(), key=lambda r: PHASE_DEPTH.get(r["deepest"], PHASE_DEPTH["swiss"])) if per else None),
-        "total_matches": total_matches, "total_goals": total_goals,
-        "avg_goals_per_match": round(total_goals / total_matches, 2) if total_matches else 0,
+        "most_wins": pick(top(lambda r: r["wins"])), "most_goals": pick(top(lambda r: r["goals"])),
+        "best_diff": pick(top(lambda r: r["diff"])), "most_played": pick(top(lambda r: r["played"])),
+        "longest_win_streak": pick(top(lambda r: r["best_streak"])), "longest_unbeaten": pick(top(lambda r: r["unbeaten"])),
+        "best_campaign": pick(top(depth)),
+        "total_matches": len(games), "total_goals": total_goals,
+        "avg_goals_per_match": round(total_goals / len(games), 2) if games else 0,
     }
-def _conceded(ms, pid):
-    return sum((m.score_b if m.player_a_id == pid else m.score_a) or 0 for m in ms if pid in (m.player_a_id, m.player_b_id))
 def PlayerRef(p): return {"id": p.id, "nickname": p.nickname, "name": p.name}
 
 IMPORT_PLAYER_FIELDS = ("name", "nickname", "campus", "team", "platform", "country", "status")  # filtros sobre o jogador

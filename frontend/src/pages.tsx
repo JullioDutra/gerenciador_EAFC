@@ -244,7 +244,8 @@ const STAT_ICONS: Record<string, any> = { most_wins: Trophy, most_goals: Goal, b
   longest_win_streak: Flame, longest_unbeaten: Shield, best_campaign: Sparkles };
 
 export function Stats({ sid }: { sid: number }) {
-  const { data } = useData<any>(`/seasons/${sid}/stats/`);
+  const { data, err } = useData<any>(`/seasons/${sid}/stats/`);
+  if (err) return <div className="card text-rose-300">Não foi possível carregar as estatísticas: {err}</div>;
   if (!data) return null;
   return (
     <div className="space-y-4">
@@ -255,7 +256,7 @@ export function Stats({ sid }: { sid: number }) {
       </div>
       <div className="grid md:grid-cols-2 gap-3">
         {Object.entries(STAT_LABELS).map(([k, label]) => { const r = data[k]; if (!r) return null; const Icon = STAT_ICONS[k];
-          const val = k === "most_wins" ? r.wins : k === "most_goals" ? r.goals : k === "best_diff" ? r.goals :
+          const val = k === "most_wins" ? r.wins : k === "most_goals" ? r.goals : k === "best_diff" ? (r.diff > 0 ? `+${r.diff}` : r.diff) :
             k === "most_played" ? r.played : k === "longest_win_streak" ? r.best_streak : k === "longest_unbeaten" ? r.unbeaten : r.deepest;
           return (
             <div key={k} className="card flex items-center gap-3">
